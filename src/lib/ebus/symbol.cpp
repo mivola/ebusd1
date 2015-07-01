@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -48,60 +48,59 @@ static const unsigned char CRC_LOOKUP_TABLE[] =
 };
 
 
-SymbolString::SymbolString(const string& str) //TODO use a factory method instead
-	: m_unescapeState(0), m_crc(0)
+void SymbolString::addAll(const SymbolString& str)
 {
-	// parse + escape
-	for (size_t i = 0; i+1 < str.size(); i += 2) {
-		unsigned long value = strtoul(str.substr(i, 2).c_str(), NULL, 16); // TODO check
-		push_back((unsigned char)value, false, true);
+	bool addCrc = m_unescapeState == 0;
+	bool isEscaped = str.m_unescapeState == 0;
+	vector<unsigned char> data = str.m_data;
+	for (size_t i = 0; i < data.size(); i++) {
+		push_back(data[i], isEscaped, addCrc);
 	}
-	// add CRC + escape
-	push_back(m_crc, false, false);
+	if (addCrc)
+		push_back(m_crc, false, false); // add CRC
 }
 
-SymbolString::SymbolString(const SymbolString& str, const bool escape, const bool addCrc)
-	: m_unescapeState(escape == true ? 0 : 1), m_crc(0)
+result_t SymbolString::parseHex(const string& str, const bool isEscaped)
 {
-	for (size_t i = 0; i < str.size(); i++) {
-		push_back(str[i], str.m_unescapeState == 0, true);
+	bool addCrc = m_unescapeState == 0;
+	for (size_t i = 0; i < str.size(); i += 2) {
+		char* strEnd = NULL;
+		const char* strBegin = str.substr(i, 2).c_str();
+		unsigned long int value = strtoul(strBegin, &strEnd, 16);
+
+		if (strEnd == NULL || *strEnd != 0 || strEnd != strBegin+2 || value > 0xff)
+			return RESULT_ERR_INVALID_NUM; // invalid value
+
+		push_back((unsigned char)value, isEscaped, addCrc);
 	}
-	if (addCrc == true)
-		// add CRC
-		push_back(m_crc, false, false);
+	if (addCrc)
+		push_back(m_crc, false, false); // add CRC
+
+	return RESULT_OK;
 }
 
-SymbolString::SymbolString(const string& str, bool isEscaped)
-	: m_unescapeState(1), m_crc(0)
-{
-	// parse + optionally unescape
-	for (size_t i = 0; i+1 < str.size(); i += 2) {
-		unsigned long value = strtoul(str.substr(i, 2).c_str(), NULL, 16); // TODO check
-		push_back((unsigned char)value, isEscaped, false);
-	}
-}
-
-const string SymbolString::getDataStr(const bool unescape)
+const string SymbolString::getDataStr(const bool unescape, const bool skipLastSymbol)
 {
 	stringstream sstr;
 	bool previousEscape = false;
 
 	for (size_t i = 0; i < m_data.size(); i++) {
 		unsigned char value = m_data[i];
-		if (m_unescapeState == 0 && unescape == true && previousEscape == true) {
-			if (value == 0x00)
-				sstr << "a9"; // ESC
-			else if (value == 0x01)
-				sstr << "aa"; // SYN
-			else
-				sstr << "XX"; // invalid escape sequence
-
+		if (m_unescapeState == 0 && unescape && previousEscape) {
+			if (!skipLastSymbol || i+1 < m_data.size()) {
+				if (value == 0x00)
+					sstr << "a9"; // ESC
+				else if (value == 0x01)
+					sstr << "aa"; // SYN
+				else
+					sstr << "XX"; // invalid escape sequence
+			}
 			previousEscape = false;
 		}
-		else if (m_unescapeState == 0 && unescape == true && value == ESC) {
+		else if (m_unescapeState == 0 && unescape && value == ESC) {
 			previousEscape = true; // escape sequence not yet finished
 		}
-		else {
+		else if (!skipLastSymbol || i+1 < m_data.size()) {
 			sstr << nouppercase << setw(2) << hex
 					<< setfill('0') << static_cast<unsigned>(value);
 		}
@@ -113,35 +112,35 @@ const string SymbolString::getDataStr(const bool unescape)
 result_t SymbolString::push_back(const unsigned char value, const bool isEscaped, const bool updateCRC)
 {
 	if (m_unescapeState == 0) { // store escaped data
-		if (isEscaped == false && value == ESC) {
+		if (!isEscaped && value == ESC) {
 			m_data.push_back(ESC);
 			m_data.push_back(0x00);
-			if (updateCRC == true) {
+			if (updateCRC) {
 				addCRC(ESC);
 				addCRC(0x00);
 			}
 		}
-		else if (isEscaped == false && value == SYN) {
+		else if (!isEscaped && value == SYN) {
 			m_data.push_back(ESC);
 			m_data.push_back(0x01);
-			if (updateCRC == true) {
+			if (updateCRC) {
 				addCRC(ESC);
 				addCRC(0x01);
 			}
 		}
 		else {
 			m_data.push_back(value);
-			if (updateCRC == true)
+			if (updateCRC)
 				addCRC(value);
 
 		}
 		return RESULT_OK;
 	}
-	else if (isEscaped == false) {
+	else if (!isEscaped) {
 		if (m_unescapeState != 1)
 			return RESULT_ERR_ESC; // invalid unescape state
 		m_data.push_back(value);
-		if (updateCRC == true) {
+		if (updateCRC) {
 			if (value == ESC) {
 				addCRC(ESC);
 				addCRC(0x00);
@@ -157,7 +156,7 @@ result_t SymbolString::push_back(const unsigned char value, const bool isEscaped
 		return RESULT_OK;
 	}
 	else if (m_unescapeState != 1) {
-		if (updateCRC == true)
+		if (updateCRC)
 			addCRC(value);
 
 		if (value == 0x00) {
@@ -173,13 +172,13 @@ result_t SymbolString::push_back(const unsigned char value, const bool isEscaped
 		return RESULT_ERR_ESC; // invalid escape sequence
 	}
 	else if (value == ESC) {
-		if (updateCRC == true)
+		if (updateCRC)
 			addCRC(value);
 
 		m_unescapeState = 2;
 		return RESULT_IN_ESC;
 	}
-	if (updateCRC == true)
+	if (updateCRC)
 		addCRC(value);
 
 	m_data.push_back(value);
@@ -200,6 +199,21 @@ bool isMaster(unsigned char addr) {
 	    && ((addrLo == 0x0) || (addrLo == 0x1) || (addrLo == 0x3) || (addrLo == 0x7) || (addrLo == 0xF));
 }
 
+bool isSlaveMaster(unsigned char addr) {
+	return isMaster((unsigned char)(addr+256-5));
+}
+
+unsigned char getMasterAddress(unsigned char addr) {
+	if (isMaster(addr))
+		return addr;
+
+	addr = (unsigned char)(addr+256-5);
+	if (isMaster(addr))
+		return addr;
+
+	return SYN;
+}
+
 unsigned char getMasterNumber(unsigned char addr) {
 	unsigned char addrHi = (addr & 0xF0) >> 4;
 	unsigned char addrLo = (addr & 0x0F);
@@ -208,19 +222,19 @@ unsigned char getMasterNumber(unsigned char addr) {
 	switch (addrLo)
 	{
 	case 0x0:
-		priority = 0;
-		break;
-	case 0x1:
 		priority = 1;
 		break;
-	case 0x3:
+	case 0x1:
 		priority = 2;
 		break;
-	case 0x7:
+	case 0x3:
 		priority = 3;
 		break;
-	case 0xF:
+	case 0x7:
 		priority = 4;
+		break;
+	case 0xF:
+		priority = 5;
 		break;
 	default:
 		return 0;
@@ -229,21 +243,21 @@ unsigned char getMasterNumber(unsigned char addr) {
 	switch (addrHi)
 	{
 	case 0x0:
-		return 5*0 + priority + 1;
+		return (unsigned char)(5*0 + priority);
 	case 0x1:
-		return 5*1 + priority + 2;
+		return (unsigned char)(5*1 + priority);
 	case 0x3:
-		return 5*2 + priority + 3;
+		return (unsigned char)(5*2 + priority);
 	case 0x7:
-		return 5*3 + priority + 4;
+		return (unsigned char)(5*3 + priority);
 	case 0xF:
-		return 5*4 + priority + 5;
+		return (unsigned char)(5*4 + priority);
 	default:
 		return 0;
 	}
 }
 
 bool isValidAddress(unsigned char addr, bool allowBroadcast) {
-	return addr != SYN && addr != ESC && (allowBroadcast == true || addr != BROADCAST);
+	return addr != SYN && addr != ESC && (allowBroadcast || addr != BROADCAST);
 }
 

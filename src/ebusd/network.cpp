@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Roland Jax 2012-2014 <ebusd@liwest.at>,
- * John Baier 2014-2015 <ebusd@johnm.de>
+ * John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -71,10 +71,10 @@ void Connection::run()
 #endif
 #endif
 
-	time_t listenSince = 0;
 	bool closed = false;
+	NetMessage message(m_isHttp);
 
-	while (closed == false) {
+	while (!closed) {
 #ifdef HAVE_PPOLL
 		// wait for new fd event
 		ret = ppoll(fds, nfds, &tdiff, NULL);
@@ -109,37 +109,39 @@ void Connection::run()
 #endif
 		}
 
-		if (newData == true || m_listening == true) {
+		if (newData || message.isListening()) {
 			char data[256];
-			size_t datalen = 0;
 
-			if (newData == true) {
-				if (m_socket->isValid() == false)
-					break;
+			if (!m_socket->isValid())
+				break;
 
-				datalen = m_socket->recv(data, sizeof(data)-1);
+			if (newData) {
+				size_t datalen = m_socket->recv(data, sizeof(data)-1);
 
 				// remove closed socket
 				if (datalen <= 0)
 					break;
+
+				data[datalen] = '\0';
+			} else {
+				data[0] = '\0';
 			}
 
 			// decode client data
-			data[datalen] = '\0';
-			NetMessage message(data, m_listening, listenSince);
-			m_netQueue->add(&message);
+			if (message.add(data)) {
+				m_netQueue->add(&message);
 
-			// wait for result
-			logDebug(lf_network, "[%05d] wait for result", getID());
-			string result = message.getResult();
+				// wait for result
+				logDebug(lf_network, "[%05d] wait for result", getID());
+				string result = message.getResult();
 
-			if (m_socket->isValid() == false)
-				break;
+				if (!m_socket->isValid())
+					break;
 
-			m_socket->send(result.c_str(), result.size());
-			m_listening = message.isListening(listenSince);
+				m_socket->send(result.c_str(), result.size());
+			}
 
-			if (message.isDisconnect())
+			if (message.isDisconnect() || !m_socket->isValid())
 				break;
 		}
 
@@ -151,10 +153,10 @@ void Connection::run()
 }
 
 
-Network::Network(const bool local, const int port, WQueue<NetMessage*>* netQueue)
+Network::Network(const bool local, const uint16_t port, const uint16_t httpPort, WQueue<NetMessage*>* netQueue)
 	: m_netQueue(netQueue), m_listening(false)
 {
-	if (local == true)
+	if (local)
 		m_tcpServer = new TCPServer(port, "127.0.0.1");
 	else
 		m_tcpServer = new TCPServer(port, "0.0.0.0");
@@ -162,13 +164,18 @@ Network::Network(const bool local, const int port, WQueue<NetMessage*>* netQueue
 	if (m_tcpServer != NULL && m_tcpServer->start() == 0)
 		m_listening = true;
 
+	if (httpPort>0) {
+		m_httpServer = new TCPServer(httpPort, "0.0.0.0");
+		m_httpServer->start();
+	} else
+		m_httpServer = NULL;
 }
 
 Network::~Network()
 {
 	stop();
 
-	while (m_connections.empty() == false) {
+	while (!m_connections.empty()) {
 		Connection* connection = m_connections.back();
 		m_connections.pop_back();
 		connection->stop();
@@ -183,7 +190,7 @@ Network::~Network()
 
 void Network::run()
 {
-	if (m_listening == false)
+	if (!m_listening)
 		return;
 
 	int ret;
@@ -192,9 +199,9 @@ void Network::run()
 	// set timeout
 	tdiff.tv_sec = 1;
 	tdiff.tv_nsec = 0;
-
+	int socketCount = m_httpServer ? 2 : 1;
 #ifdef HAVE_PPOLL
-	int nfds = 2;
+	int nfds = 1+socketCount;
 	struct pollfd fds[nfds];
 
 	memset(fds, 0, sizeof(fds));
@@ -204,6 +211,11 @@ void Network::run()
 
 	fds[1].fd = m_tcpServer->getFD();
 	fds[1].events = POLLIN;
+
+	if (m_httpServer) {
+		fds[2].fd = m_httpServer->getFD();
+		fds[2].events = POLLIN;
+	}
 #else
 #ifdef HAVE_PSELECT
 	int maxfd;
@@ -212,13 +224,19 @@ void Network::run()
 	FD_ZERO(&checkfds);
 	FD_SET(m_notify.notifyFD(), &checkfds);
 	FD_SET(m_tcpServer->getFD(), &checkfds);
+	if (m_httpServer) {
+		FD_SET(m_httpServer->getFD(), &checkfds);
+	}
 
-	(m_notify.notifyFD() > m_tcpServer->getFD()) ?
-		(maxfd = m_notify.notifyFD()) : (maxfd = m_tcpServer->getFD());
+	maxfd = (m_notify.notifyFD() > m_tcpServer->getFD()) ?
+		m_notify.notifyFD() : m_tcpServer->getFD();
+	if (m_httpServer && m_httpServer->getFD()>maxfd) {
+		maxfd = m_httpServer->getFD();
+	}
 #endif
 #endif
 
-	for (;;) {
+	while (true) {
 
 #ifdef HAVE_PPOLL
 		// wait for new fd event
@@ -236,7 +254,7 @@ void Network::run()
 			cleanConnections();
 			continue;
 		}
-
+		bool newData = false, isHttp = false;
 #ifdef HAVE_PPOLL
 		// new data from notify
 		if (fds[0].revents & POLLIN) {
@@ -245,6 +263,10 @@ void Network::run()
 
 		// new data from socket
 		if (fds[1].revents & POLLIN) {
+			newData = true;
+		} else if (m_httpServer && fds[2].revents & POLLIN) {
+			newData = isHttp = true;
+		}
 #else
 #ifdef HAVE_PSELECT
 		// new data from notify
@@ -254,22 +276,25 @@ void Network::run()
 
 		// new data from socket
 		if (FD_ISSET(m_tcpServer->getFD(), &readfds)) {
+			newData = true;
+		} else if (m_httpServer && FD_ISSET(m_httpServer->getFD(), &readfds)) {
+			newData = isHttp = true;
+		}
 #endif
 #endif
-
-			TCPSocket* socket = m_tcpServer->newSocket();
+		if (newData) {
+			TCPSocket* socket = (isHttp ? m_httpServer : m_tcpServer)->newSocket();
 			if (socket == NULL)
 				continue;
 
-			Connection* connection = new Connection(socket, m_netQueue);
+			Connection* connection = new Connection(socket, isHttp, m_netQueue);
 			if (connection == NULL)
 				continue;
 
 			connection->start("connection");
 			m_connections.push_back(connection);
-			logInfo(lf_network, "[%05d] connection opened %s", connection->getID(), socket->getIP().c_str());
+			logInfo(lf_network, "[%05d] %s connection opened %s", connection->getID(), isHttp ? "HTTP" : "client", socket->getIP().c_str());
 		}
-
 	}
 }
 
@@ -277,7 +302,7 @@ void Network::cleanConnections()
 {
 	list<Connection*>::iterator c_it;
 	for (c_it = m_connections.begin(); c_it != m_connections.end(); c_it++) {
-		if ((*c_it)->isRunning() == false) {
+		if (!(*c_it)->isRunning()) {
 			Connection* connection = *c_it;
 			c_it = m_connections.erase(c_it);
 			delete connection;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -23,6 +23,7 @@
 #include "result.h"
 #include "data.h"
 #include "message.h"
+#include <stdint.h>
 
 /** \file main.h */
 
@@ -31,9 +32,10 @@ struct options
 {
 	const char* device; //!< eBUS device (serial device or ip:port) [/dev/ttyUSB0]
 	bool noDeviceCheck; //!< skip serial eBUS device test
+	bool readonly; //!< read-only access to the device
 
 	const char* configPath; //!< path to CSV configuration files [/etc/ebusd]
-	bool checkConfig; //!< only check CSV config files, then stop
+	int checkConfig; //!< check CSV config files (!=0) and optionally dump (2), then stop
 	int pollInterval; //!< poll interval in seconds, 0 to disable [5]
 
 	unsigned char address; //!< own bus address [FF]
@@ -43,10 +45,13 @@ struct options
 	int sendRetries; //!< number of retries for failed sends [2]
 	int receiveTimeout; //!< timeout for receiving answer from slave in us [15000]
 	int masterCount; //!< expected number of masters for arbitration [5]
+	bool generateSyn; //!< enable AUTO-SYN symbol generation
 
 	bool foreground; //!< run in foreground
-	int port; //!< port to listen for client connections [8888]
+	uint16_t port; //!< port to listen for command line connections [8888]
 	bool localOnly; //!< listen on 127.0.0.1 interface only
+	uint16_t httpPort; //!< optional port to listen for HTTP connections, 0 to disable [0]
+	string htmlPath; //!< path for HTML files served by the HTTP port [/var/ebusd/html]
 
 	const char* logFile; //!< log file name [/var/log/ebusd.log]
 	bool logRaw; //!< log each received/sent byte on the bus

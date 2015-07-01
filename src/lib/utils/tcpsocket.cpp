@@ -29,7 +29,7 @@ using namespace std;
 TCPSocket::TCPSocket(int sfd, struct sockaddr_in* address) : m_sfd(sfd)
 {
 	char ip[17];
-	inet_ntop(AF_INET, (struct in_addr*)&(address->sin_addr.s_addr), ip, sizeof(ip)-1);
+	inet_ntop(AF_INET, (struct in_addr*)&(address->sin_addr.s_addr), ip, (socklen_t)sizeof(ip)-1);
 	m_ip = ip;
 	m_port = ntohs(address->sin_port);
 }
@@ -43,7 +43,7 @@ bool TCPSocket::isValid()
 }
 
 
-TCPSocket* TCPClient::connect(const string& server, const int& port)
+TCPSocket* TCPClient::connect(const string& server, const uint16_t& port)
 {
 	struct sockaddr_in address;
 	int ret;
@@ -82,7 +82,7 @@ TCPSocket* TCPClient::connect(const string& server, const int& port)
 
 int TCPServer::start()
 {
-	if (m_listening == true)
+	if (m_listening)
 		return 0;
 
 	m_lfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -115,7 +115,7 @@ int TCPServer::start()
 
 TCPSocket* TCPServer::newSocket()
 {
-	if (m_listening == false)
+	if (!m_listening)
 		return NULL;
 
 	struct sockaddr_in address;

@@ -1,5 +1,6 @@
 /*
- * Copyright (C) Roland Jax 2012-2014 <ebusd@liwest.at>
+ * Copyright (C) Roland Jax 2012-2014 <ebusd@liwest.at>,
+ * John Baier 2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -23,6 +24,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <string>
+#include <stdint.h>
 
 /** \file tcpsocket.h */
 
@@ -66,7 +68,7 @@ public:
 	 * returns the tcp port.
 	 * @return the tcp port.
 	 */
-	int getPort() const { return m_port; }
+	uint16_t getPort() const { return m_port; }
 
 	/**
 	 * returns the ip address.
@@ -91,7 +93,7 @@ private:
 	int m_sfd;
 
 	/** port of tcp socket */
-	int m_port;
+	uint16_t m_port;
 
 	/** ip address of tcp socket */
 	string  m_ip;
@@ -118,7 +120,7 @@ public:
 	 * @param port the tcp port.
 	 * @return pointer to an opened tcp socket.
 	 */
-	TCPSocket* connect(const string& server, const int& port);
+	TCPSocket* connect(const string& server, const uint16_t& port);
 
 };
 
@@ -134,7 +136,7 @@ public:
 	 * @param port the tcp port.
 	 * @param address the ip address.
 	 */
-	TCPServer(const int port, const string address)
+	TCPServer(const uint16_t port, const string address)
 		: m_lfd(0), m_port(port), m_address(address), m_listening(false) {}
 
 	/**
@@ -149,7 +151,7 @@ public:
 	int start();
 
 	/**
-	 * accept an incomming tcp connection and create a local tcp socket for communication.
+	 * accept an incoming tcp connection and create a local tcp socket for communication.
 	 * @return pointer to an opened tcp socket.
 	 */
 	TCPSocket* newSocket();
@@ -165,7 +167,7 @@ private:
 	int m_lfd;
 
 	/** listening tcp port */
-	int m_port;
+	uint16_t m_port;
 
 	/** listening tcp socket ip address */
 	string m_address;

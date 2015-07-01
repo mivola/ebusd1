@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Roland Jax 2012-2014 <ebusd@liwest.at>,
- * John Baier 2014-2015 <ebusd@johnm.de>
+ * John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -40,10 +40,10 @@ using namespace std;
 struct options
 {
 	const char* server; //!< ebusd server host (name or ip) [localhost]
-	int port; //!< ebusd server port [8888]
+	uint16_t port; //!< ebusd server port [8888]
 
 	char* const *args; //!< arguments to pass to ebusd
-	int argCount; //!< number of arguments to pass to ebusd
+	unsigned int argCount; //!< number of arguments to pass to ebusd
 };
 
 /** the program options. */
@@ -90,6 +90,7 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
 	struct options *opt = (struct options*)state->input;
 	char* strEnd = NULL;
+	unsigned int port;
 	switch (key) {
 	// Device settings:
 	case 's': // --server=localhost
@@ -100,11 +101,12 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 		opt->server = arg;
 		break;
 	case 'p': // --port=8888
-		opt->port = strtol(arg, &strEnd, 10);
-		if (strEnd == NULL || *strEnd != 0 || opt->port < 1 || opt->port > 65535) {
+		port = strtoul(arg, &strEnd, 10);
+		if (strEnd == NULL || strEnd == arg || *strEnd != 0 || port < 1 || port > 65535) {
 			argp_error(state, "invalid port");
 			return EINVAL;
 		}
+		opt->port = (uint16_t)port;
 		break;
 	case ARGP_KEY_ARGS:
 		opt->args = state->argv + state->next;
@@ -189,8 +191,8 @@ string fetchData(TCPSocket* socket, bool& listening)
 #endif
 		}
 
-			if (newData == true) {
-				if (socket->isValid() == true) {
+			if (newData) {
+				if (socket->isValid()) {
 					datalen = socket->recv(data, sizeof(data));
 
 					if (datalen < 0) {
@@ -204,14 +206,14 @@ string fetchData(TCPSocket* socket, bool& listening)
 					if ((ss.str().length() >= 2
 					&& ss.str()[ss.str().length()-2] == '\n'
 					&& ss.str()[ss.str().length()-1] == '\n')
-					|| listening == true)
+					|| listening)
 						break;
 
 				}
 				else
 					break;
 			}
-			else if (newInput == true) {
+			else if (newInput) {
 				getline(cin, message);
 				message += '\n';
 
@@ -230,7 +232,7 @@ string fetchData(TCPSocket* socket, bool& listening)
 	return ss.str();
 }
 
-void connect(const char* host, int port, char* const *args, int argCount)
+void connect(const char* host, uint16_t port, char* const *args, int argCount)
 {
 
 	TCPClient* client = new TCPClient();
@@ -242,7 +244,7 @@ void connect(const char* host, int port, char* const *args, int argCount)
 			string message;
 			bool listening = false;
 
-			if (once == false) {
+			if (!once) {
 				cout << host << ": ";
 				getline(cin, message);
 			}
@@ -259,6 +261,7 @@ void connect(const char* host, int port, char* const *args, int argCount)
 				}
 			}
 
+			message += '\n';
 			socket->send(message.c_str(), message.size());
 
 			if (strcasecmp(message.c_str(), "Q") == 0
@@ -270,7 +273,7 @@ void connect(const char* host, int port, char* const *args, int argCount)
 				if (strcasecmp(message.c_str(), "L") == 0
 				|| strcasecmp(message.c_str(), "LISTEN") == 0) {
 					listening = true;
-					while (listening && cin.eof() == false) {
+					while (listening && !cin.eof()) {
 						string result(fetchData(socket, listening));
 						cout << result;
 						if (strcasecmp(result.c_str(), "LISTEN STOPPED") == 0)
@@ -281,7 +284,7 @@ void connect(const char* host, int port, char* const *args, int argCount)
 					cout << fetchData(socket, listening);
 			}
 
-		} while (once == false && cin.eof() == false);
+		} while (!once && !cin.eof());
 
 		delete socket;
 

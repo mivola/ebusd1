@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -46,6 +46,20 @@ using namespace std;
 /** the separator character used between fields (in UI only). */
 #define UI_FIELD_SEPARATOR ';'
 
+/** the type for data output format options. */
+/*class OutputFormat {
+	public:
+	bool operator&(int x){return false;}
+	OutputFormat(int x) {}
+};*/
+//typedef xOutputFormat* OutputFormat;
+typedef int OutputFormat;
+
+/* the bit flags for @a OutputFormat. */
+static const unsigned int OF_VERBOSE = 0x01; //!< verbose format (names, values, units, and comments).
+static const unsigned int OF_NUMERIC = 0x02; //!< numeric format (keep numeric value of value=name pairs).
+static const unsigned int OF_JSON = 0x04; //!< JSON format.
+
 /** the message part in which a data field is stored. */
 enum PartType {
 	pt_any,          //!< stored in any data (master or slave)
@@ -72,19 +86,22 @@ static const unsigned int DAY = 0x20; //!< forced value list defaulting to week 
 static const unsigned int IGN = 0x40; //!< ignore value during read and write
 static const unsigned int FIX = 0x80; //!< fixed width formatting
 static const unsigned int REQ = 0x100;//!< value may not be NULL
+static const unsigned int HCD = 0x200; //!< binary representation is hex converted to decimal and interpreted as 2 digits (also requires @a BCD)
 
 /** The structure for defining field types with their properties. */
 typedef struct {
-	const char* name;                        //!< field identifier
-	//todo rename to bitCount
-	const unsigned int bitCount;             //!< number of bits (maximum length if @a ADJ flag is set, must be multiple of 8 with flag @a BCD)
-	const BaseType type;                     //!< base data type
-	const unsigned int flags;                //!< flags (e.g. @a BCD)
-	const unsigned int replacement;          //!< replacement value (fill-up value for @a bt_str / @a bt_hexstr, no replacement if equal to @a minValueOrLength for @a bt_num)
-	const unsigned int minValueOrLength;     //!< minimum binary value (minimum length of string for @a StringDataField)
-	const unsigned int maxValueOrLength;     //!< maximum binary value (maximum length of string for @a StringDataField)
-	const unsigned int divisorOrFirstBit;    //!< @a bt_number: divisor or offset to first bit (if (@a bitCount%8)!=0)
+	const char* name;                    //!< field identifier
+	const unsigned char bitCount;        //!< number of bits (maximum length if @a ADJ flag is set, must be multiple of 8 with flag @a BCD)
+	const BaseType type;                 //!< base data type
+	const unsigned short flags;          //!< flags (e.g. @a BCD)
+	const unsigned int replacement;      //!< replacement value (fill-up value for @a bt_str / @a bt_hexstr, no replacement if equal to @a minValueOrLength for @a bt_num)
+	const unsigned int minValueOrLength; //!< minimum binary value (minimum length of string for @a StringDataField)
+	const unsigned int maxValueOrLength; //!< maximum binary value (maximum length of string for @a StringDataField)
+	const short divisorOrFirstBit;       //!< @a bt_number: divisor (negative for reciprocal) or offset to first bit (if (@a bitCount%8)!=0)
 } dataType_t;
+
+/** the maximum allowed position within master or slave data. */
+#define MAX_POS 24
 
 /**
  * Parse an unsigned int value.
@@ -97,6 +114,18 @@ typedef struct {
  * @return the parsed value.
  */
 unsigned int parseInt(const char* str, int base, const unsigned int minValue, const unsigned int maxValue, result_t& result, unsigned int* length=NULL);
+
+/**
+ * Parse a signed int value.
+ * @param str the string to parse.
+ * @param base the numerical base.
+ * @param minValue the minimum resulting value.
+ * @param maxValue the maximum resulting value.
+ * @param result the variable in which to store an error code when parsing failed or the value is out of bounds.
+ * @param length the optional variable in which to store the number of read characters.
+ * @return the parsed value.
+ */
+int parseSignedInt(const char* str, int base, const int minValue, const int maxValue, result_t& result, unsigned int* length=NULL);
 
 /**
  * Print the error position of the iterator to stdout.
@@ -140,13 +169,23 @@ public:
 	 * @param templates the @a DataFieldTemplates to be referenced by name, or NULL.
 	 * @param returnField the variable in which to store the created instance.
 	 * @param isWriteMessage whether the field is part of a write message (default false).
-	 * @param dstAddress the destination bus address (default @a SYN for creating a template @a DataField).
+	 * @param isTemplate true for creating a template @a DataField.
+	 * @param isBroadcastOrMasterDestination true if the destination bus address is @a BRODCAST or a master address.
 	 * @return @a RESULT_OK on success, or an error code.
 	 * Note: the caller needs to free the created instance.
 	 */
 	static result_t create(vector<string>::iterator& it, const vector<string>::iterator end,
 			DataFieldTemplates* templates, DataField*& returnField,
-			const bool isWriteMessage=false, const unsigned char dstAddress=SYN);
+			const bool isWriteMessage,
+			const bool isTemplate, const bool isBroadcastOrMasterDestination);
+
+	/**
+	 * Dump the @a string optionally embedded in @a TEXT_SEPARATOR to the output.
+	 * @param output the @a ostream to dump to.
+	 * @param str the @a string to dump.
+	 * @param prependFieldSeparator whether to start with a @a FIELD_SEPARATOR.
+	 */
+	static void dumpString(ostream& output, const string str, const bool prependFieldSeparator=true);
 
 	/**
 	 * Returns the length of this field (or contained fields) in bytes.
@@ -156,19 +195,19 @@ public:
 	virtual unsigned char getLength(PartType partType) = 0;
 
 	/**
-	 * Derives a new DataField from this field.
+	 * Derive a new @a DataField from this field.
 	 * @param name the field name.
 	 * @param comment the field comment, or empty to use this fields comment.
 	 * @param unit the value unit, or empty to use this fields unit (if applicable).
 	 * @param partType the message part in which the field is stored.
-	 * @param divisor the extra divisor to apply on the value, or 1 for none (if applicable).
+	 * @param divisor the extra divisor (negative for reciprocal) to apply on the value, or 1 for none (if applicable).
 	 * @param values the value=text assignments, or empty to use this fields assignments (if applicable).
 	 * @param fields the @a vector to which created @a SingleDataField instances shall be added.
 	 * @return @a RESULT_OK on success, or an error code.
 	 */
 	virtual result_t derive(string name, string comment,
 			string unit, const PartType partType,
-			unsigned int divisor, map<unsigned int, string> values,
+			int divisor, map<unsigned int, string> values,
 			vector<SingleDataField*>& fields) = 0;
 
 	/**
@@ -195,20 +234,18 @@ public:
 	 * @param data the unescaped data @a SymbolString for reading binary data.
 	 * @param offset the additional offset to add for reading binary data.
 	 * @param output the @a ostringstream to append the formatted value to.
+	 * @param outputFormat the @a OutputFormat options to use.
 	 * @param leadingSeparator whether to prepend a separator before the formatted value.
-	 * @param verbose whether to prepend the name, append the unit (if present), and append
-	 * the comment in square brackets (if present).
-	 * @param filterName the optional name of a field to limit the output to.
-	 * @param separator the separator character between multiple fields.
+	 * @param fieldName the optional name of a field to limit the output to.
+	 * @param fieldIndex the optional index of the named field to limit the output to, or -1.
 	 * @return @a RESULT_OK on success (or if the partType does not match),
 	 * or @a RESULT_EMPTY if the field was skipped (either ignored or due to @a filterName),
 	 * or an error code.
 	 */
 	virtual result_t read(const PartType partType,
 			SymbolString& data, unsigned char offset,
-			ostringstream& output, bool leadingSeparator=false,
-			bool verbose=false, const char* filterName=NULL,
-			char separator=UI_FIELD_SEPARATOR) = 0;
+			ostringstream& output, OutputFormat outputFormat,
+			bool leadingSeparator=false, const char* fieldName=NULL, signed char fieldIndex=-1) = 0;
 
 	/**
 	 * Writes the value to the master or slave @a SymbolString.
@@ -263,6 +300,25 @@ public:
 	virtual ~SingleDataField() {}
 
 	/**
+	 * Factory method for creating a new @a SingleDataField instance derived from a base type.
+	 * @param typeNameStr the base type name string.
+	 * @param length the base type length, or 0 for default.
+	 * @param name the field name.
+	 * @param comment the field comment.
+	 * @param unit the value unit.
+	 * @param partType the message part in which the field is stored.
+	 * @param divisor the extra divisor (negative for reciprocal) to apply on the value, or 1 for none (if applicable).
+	 * @param values the value=text assignments.
+	 * @param returnField the variable in which the created @a SingleDataField instance shall be stored.
+	 * @return @a RESULT_OK on success, or an error code.
+	 * Note: the caller needs to free the created instance.
+	 */
+	static result_t create(const char* typeNameStr, const unsigned char length,
+		const string name, const string comment, const string unit,
+		const PartType partType, int divisor, map<unsigned int, string> values,
+		SingleDataField* &returnField);
+
+	/**
 	 * Get the value unit.
 	 * @return the value unit.
 	 */
@@ -281,7 +337,7 @@ public:
 	PartType getPartType() const { return m_partType; }
 
 	// @copydoc
-	virtual unsigned char getLength(PartType partType) { return partType == m_partType ? m_length : 0; };
+	virtual unsigned char getLength(PartType partType) { return partType == m_partType ? m_length : (unsigned char)0; };
 	// re-use same position as previous field as not all bits of fully consumed yet
 
 	/**
@@ -298,9 +354,8 @@ public:
 	// @copydoc
 	virtual result_t read(const PartType partType,
 			SymbolString& data, unsigned char offset,
-			ostringstream& output, bool leadingSeparator=false,
-			bool verbose=false, const char* filterName=NULL,
-			char separator=UI_FIELD_SEPARATOR);
+			ostringstream& output, OutputFormat outputFormat,
+			bool leadingSeparator=false, const char* fieldName=NULL, signed char fieldIndex=-1);
 
 	// @copydoc
 	virtual result_t write(istringstream& input,
@@ -312,11 +367,13 @@ protected:
 	/**
 	 * Internal method for reading the field from a @a SymbolString.
 	 * @param input the unescaped @a SymbolString to read the binary value from.
-	 * @param offset the offset in the @a SymbolString.
+	 * @param baseOffset the base offset in the @a SymbolString.
 	 * @param output the ostringstream to append the formatted value to.
+	 * @param outputFormat the @a OutputFormat options to use.
 	 * @return @a RESULT_OK on success, or an error code.
 	 */
-	virtual result_t readSymbols(SymbolString& input, const unsigned char offset, ostringstream& output) = 0;
+	virtual result_t readSymbols(SymbolString& input, const unsigned char baseOffset,
+			ostringstream& output, OutputFormat outputFormat) = 0;
 
 	/**
 	 * Internal method for writing the field to a @a SymbolString.
@@ -373,7 +430,7 @@ public:
 	// @copydoc
 	virtual result_t derive(string name, string comment,
 			string unit, const PartType partType,
-			unsigned int divisor, map<unsigned int, string> values,
+			int divisor, map<unsigned int, string> values,
 			vector<SingleDataField*>& fields);
 
 	// @copydoc
@@ -382,7 +439,8 @@ public:
 protected:
 
 	// @copydoc
-	virtual result_t readSymbols(SymbolString& input, const unsigned char offset, ostringstream& output);
+	virtual result_t readSymbols(SymbolString& input, const unsigned char baseOffset,
+			ostringstream& output, OutputFormat outputFormat);
 
 	// @copydoc
 	virtual result_t writeSymbols(istringstream& input, const unsigned char offset, SymbolString& output);
@@ -470,12 +528,12 @@ public:
 	 * @param partType the message part in which the field is stored.
 	 * @param length the number of symbols in the message part in which the field is stored.
 	 * @param bitCount the number of bits in the binary value (may be less than @a length * 8).
-	 * @param divisor the extra divisor to apply on the value, or 1 for none.
+	 * @param divisor the extra divisor (negative for reciprocal) to apply on the value, or 1 for none.
 	 */
 	NumberDataField(const string name, const string comment,
 			const string unit, const dataType_t dataType, const PartType partType,
 			const unsigned char length, const unsigned char bitCount,
-			const unsigned int divisor);
+			const int divisor);
 
 	/**
 	 * Destructor.
@@ -485,7 +543,7 @@ public:
 	// @copydoc
 	virtual result_t derive(string name, string comment,
 			string unit, const PartType partType,
-			unsigned int divisor, map<unsigned int, string> values,
+			int divisor, map<unsigned int, string> values,
 			vector<SingleDataField*>& fields);
 
 	// @copydoc
@@ -494,15 +552,16 @@ public:
 protected:
 
 	// @copydoc
-	virtual result_t readSymbols(SymbolString& input, const unsigned char offset, ostringstream& output);
+	virtual result_t readSymbols(SymbolString& input, const unsigned char baseOffset,
+			ostringstream& output, OutputFormat outputFormat);
 
 	// @copydoc
 	virtual result_t writeSymbols(istringstream& input, const unsigned char offset, SymbolString& output);
 
 private:
 
-	/** the combined divisor to apply on the value, or 1 for none. */
-	const unsigned int m_divisor;
+	/** the combined divisor (negative for reciprocal) to apply on the value, or 1 for none. */
+	const int m_divisor;
 
 	/** the precision for formatting the value. */
 	unsigned char m_precision;
@@ -533,7 +592,7 @@ public:
 			const unsigned char length, const unsigned char bitCount,
 			const map<unsigned int, string> values)
 		: NumericDataField(name, comment, unit, dataType, partType, length, bitCount,
-				(dataType.bitCount < 8) ? dataType.divisorOrFirstBit : 0),
+				(unsigned char)((dataType.bitCount < 8) ? dataType.divisorOrFirstBit : 0)),
 		m_values(values) {}
 
 	/**
@@ -543,7 +602,7 @@ public:
 
 	// @copydoc
 	virtual result_t derive(string name, string comment,
-			string unit, const PartType partType, unsigned int divisor,
+			string unit, const PartType partType, int divisor,
 			map<unsigned int, string> values,
 			vector<SingleDataField*>& fields);
 
@@ -553,7 +612,8 @@ public:
 protected:
 
 	// @copydoc
-	virtual result_t readSymbols(SymbolString& input, const unsigned char offset, ostringstream& output);
+	virtual result_t readSymbols(SymbolString& input, const unsigned char baseOffset,
+			ostringstream& output, OutputFormat outputFormat);
 
 	// @copydoc
 	virtual result_t writeSymbols(istringstream& input, const unsigned char offset, SymbolString& output);
@@ -601,7 +661,7 @@ public:
 	// @copydoc
 	virtual result_t derive(string name, string comment,
 			string unit, const PartType partType,
-			unsigned int divisor, map<unsigned int, string> values,
+			int divisor, map<unsigned int, string> values,
 			vector<SingleDataField*>& fields);
 
 	/**
@@ -630,9 +690,8 @@ public:
 	// @copydoc
 	virtual result_t read(const PartType partType,
 			SymbolString& data, unsigned char offset,
-			ostringstream& output, bool leadingSeparator=false,
-			bool verbose=false, const char* filterName=NULL,
-			char separator=UI_FIELD_SEPARATOR);
+			ostringstream& output, OutputFormat outputFormat,
+			bool leadingSeparator=false, const char* fieldName=NULL, signed char fieldIndex=-1);
 
 	// @copydoc
 	virtual result_t write(istringstream& input,
@@ -672,11 +731,12 @@ public:
 	/**
 	 * Adds a template @a DataField instance to this map.
 	 * @param field the @a DataField instance to add.
+	 * @param name the name to use in the map, or the empty string to use the @a DataField name.
 	 * @param replace whether replacing an already stored instance is allowed.
 	 * @return @a RESULT_OK on success, or an error code.
 	 * Note: the caller may not free the added instance on success.
 	 */
-	result_t add(DataField* field, bool replace=false);
+	result_t add(DataField* field, string name="", bool replace=false);
 
 	// @copydoc
 	virtual result_t addFromFile(vector<string>::iterator& begin, const vector<string>::iterator end, void* arg, vector< vector<string> >* defaults, const string& filename, unsigned int lineNo);

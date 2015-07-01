@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -44,8 +44,8 @@ public:
 
 	/**
 	 * Construct a new instance.
-	 * @param clazz the optional device class.
-	 * @param name the message name (unique within the same class and type).
+	 * @param circuit the optional circuit name.
+	 * @param name the message name (unique within the same circuit and type).
 	 * @param isWrite whether this is a write message.
 	 * @param isPassive true if message can only be initiated by a participant other than us,
 	 * false if message can be initiated by any participant.
@@ -54,13 +54,14 @@ public:
 	 * @param dstAddress the destination address, or @a SYN for any (set later).
 	 * @param id the primary, secondary, and optional further ID bytes.
 	 * @param data the @a DataField for encoding/decoding the message.
+	 * @param deleteData whether to delete the @a DataField during destruction.
 	 * @param pollPriority the priority for polling, or 0 for no polling at all.
 	 */
-	Message(const string clazz, const string name, const bool isWrite,
+	Message(const string circuit, const string name, const bool isWrite,
 			const bool isPassive, const string comment,
 			const unsigned char srcAddress, const unsigned char dstAddress,
-			const vector<unsigned char> id, DataField* data,
-			const unsigned int pollPriority);
+			const vector<unsigned char> id, DataField* data, const bool deleteData,
+			const unsigned char pollPriority);
 
 	/**
 	 * Construct a new temporary instance.
@@ -78,31 +79,31 @@ public:
 	/**
 	 * Destructor.
 	 */
-	virtual ~Message() { delete m_data; }
+	virtual ~Message() { if (m_deleteData) delete m_data; }
 
 	/**
-	 * Factory method for creating a new instance.
+	 * Factory method for creating new instances.
 	 * @param it the iterator to traverse for the definition parts.
 	 * @param end the iterator pointing to the end of the definition parts.
 	 * @param defaultsRows a @a vector with rows containing defaults, or NULL.
 	 * @param templates the @a DataFieldTemplates to be referenced by name, or NULL.
-	 * @param returnValue the variable in which to store the created instance.
+	 * @param messages the @a vector to which to add created instances.
 	 * @return @a RESULT_OK on success, or an error code.
-	 * Note: the caller needs to free the created instance.
+	 * Note: the caller needs to free the created instances.
 	 */
 	static result_t create(vector<string>::iterator& it, const vector<string>::iterator end,
 			vector< vector<string> >* defaultsRows,
-			DataFieldTemplates* templates, Message*& returnValue);
+			DataFieldTemplates* templates, vector<Message*>& messages);
 
 	/**
-	 * Get the optional device class.
-	 * @return the optional device class.
+	 * Get the optional circuit name.
+	 * @return the optional circuit name.
 	 */
-	string getClass() const { return m_class; }
+	string getCircuit() const { return m_circuit; }
 
 	/**
-	 * Get the message name (unique within the same class and type).
-	 * @return the message name (unique within the same class and type).
+	 * Get the message name (unique within the same circuit and type).
+	 * @return the message name (unique within the same circuit and type).
 	 */
 	string getName() const { return m_name; }
 
@@ -156,6 +157,13 @@ public:
 	unsigned char getPollPriority() const { return m_pollPriority; }
 
 	/**
+	 * Set the polling priority.
+	 * @param priority the polling priority, or 0 for no polling at all.
+	 * @return true when the priority was changed, false otherwise.
+	 */
+	bool setPollPriority(unsigned char priority);
+
+	/**
 	 * Prepare the master @a SymbolString for sending a query or command to the bus.
 	 * @param srcAddress the source address to set.
 	 * @param masterData the master data @a SymbolString for writing symbols to.
@@ -180,40 +188,46 @@ public:
 	 * @param partType the @a PartType of the data.
 	 * @param data the unescaped data @a SymbolString for reading binary data.
 	 * @param output the @a ostringstream to append the formatted value to.
+	 * @param outputFormat the @a OutputFormat options to use.
 	 * @param leadingSeparator whether to prepend a separator before the formatted value.
-	 * @param verbose whether to prepend the name, append the unit (if present), and append
-	 * the comment in square brackets (if present).
-	 * @param filterName the optional name of a field to limit the output to.
-	 * @param separator the separator character between multiple fields.
+	 * @param fieldName the optional name of a field to limit the output to.
+	 * @param fieldIndex the optional index of the named field to limit the output to, or -1.
 	 * @return @a RESULT_OK on success, or an error code.
 	 */
 	result_t decode(const PartType partType, SymbolString& data,
-			ostringstream& output, bool leadingSeparator=false,
-			bool verbose=false, const char* filterName=NULL,
-			char separator=UI_FIELD_SEPARATOR);
+			ostringstream& output, OutputFormat outputFormat=0,
+			bool leadingSeparator=false, const char* fieldName=NULL, signed char fieldIndex=-1);
 
 	/**
 	 * Decode all parts of a received message.
 	 * @param masterData the unescaped master data @a SymbolString to decode.
 	 * @param slaveData the unescaped slave data @a SymbolString to decode.
 	 * @param output the @a ostringstream to append the formatted value to.
+	 * @param outputFormat the @a OutputFormat options to use.
 	 * @param leadingSeparator whether to prepend a separator before the formatted value.
-	 * @param verbose whether to prepend the name, append the unit (if present), and append
-	 * the comment in square brackets (if present).
-	 * @param filterName the optional name of a field to limit the output to.
-	 * @param separator the separator character between multiple fields.
 	 * @return @a RESULT_OK on success, or an error code.
 	 */
 	result_t decode(SymbolString& masterData, SymbolString& slaveData,
-			ostringstream& output, bool leadingSeparator=false,
-			bool verbose=false, const char* filterName=NULL,
-			char separator=UI_FIELD_SEPARATOR);
+			ostringstream& output, OutputFormat outputFormat=0,
+			bool leadingSeparator=false);
 
 	/**
-	 * Get the last decoded value.
-	 * @return the last decoded value, or the empty string if it was not successful.
+	 * Decode the value from the last stored data.
+	 * @param output the @a ostringstream to append the formatted value to.
+	 * @param outputFormat the @a OutputFormat options to use.
+	 * @param leadingSeparator whether to prepend a separator before the formatted value.
+	 * @param fieldName the optional name of a field to limit the output to.
+	 * @param fieldIndex the optional index of the named field to limit the output to, or -1.
+	 * @return @a RESULT_OK on success, or an error code.
 	 */
-	string getLastValue() { return m_lastValue; }
+	result_t decodeLastData(ostringstream& output, OutputFormat outputFormat=0,
+			bool leadingSeparator=false, const char* fieldName=NULL, signed char fieldIndex=-1);
+
+	/**
+	 * Get the last seen slave data.
+	 * @return the last seen slave @a SymbolString.
+	 */
+	SymbolString& getLastSlaveData() { return m_lastSlaveData; }
 
 	/**
 	 * Get the time when @a m_lastValue was last stored.
@@ -240,12 +254,18 @@ public:
 	 */
 	bool isLessPollWeight(const Message* other);
 
+	/**
+	 * Write the message definition to the @a ostream.
+	 * @param output the @a ostream to append the formatted value to.
+	 */
+	void dump(ostream& output);
+
 private:
 
-	/** the optional device class. */
-	const string m_class;
+	/** the optional circuit name. */
+	const string m_circuit;
 
-	/** the message name (unique within the same class and type). */
+	/** the message name (unique within the same circuit and type). */
 	const string m_name;
 
 	/** whether this is a write message. */
@@ -261,7 +281,7 @@ private:
 	/** the source address, or @a SYN for any (only relevant if passive). */
 	const unsigned char m_srcAddress;
 
-	/** the destination address. */
+	/** the destination address, or @a SYN for any (only for temporary scan messages). */
 	const unsigned char m_dstAddress;
 
 	/** the primary, secondary, and optionally further command ID bytes. */
@@ -273,16 +293,22 @@ private:
 	/** the @a DataField for encoding/decoding the message. */
 	DataField* m_data;
 
+	/** whether to delete the @a DataField during destruction. */
+	const bool m_deleteData;
+
 	/** the priority for polling, or 0 for no polling at all. */
-	const unsigned char m_pollPriority;
+	unsigned char m_pollPriority;
 
-	/** the last decoded value. */
-	string m_lastValue;
+	/** the last seen master data. */
+	SymbolString m_lastMasterData;
 
-	/** the system time when @a m_lastValue was last stored, 0 for never. */
+	/** the last seen slave data. */
+	SymbolString m_lastSlaveData;
+
+	/** the system time when the message was last updated, 0 for never. */
 	time_t m_lastUpdateTime;
 
-	/** the system time when @a m_lastValue was last changed, 0 for never. */
+	/** the system time when the message content was last changed, 0 for never. */
 	time_t m_lastChangeTime;
 
 	/** the number of times this messages was already polled for. */
@@ -338,29 +364,29 @@ public:
 	virtual result_t addFromFile(vector<string>::iterator& begin, const vector<string>::iterator end, DataFieldTemplates* arg, vector< vector<string> >* defaults, const string& filename, unsigned int lineNo);
 
 	/**
-	 * Find the @a Message instance for the specified class and name.
-	 * @param clazz the optional device class.
+	 * Find the @a Message instance for the specified circuit and name.
+	 * @param circuit the optional circuit name.
 	 * @param name the message name.
 	 * @param isWrite whether this is a write message.
 	 * @param isPassive whether this is a passive message.
 	 * @return the @a Message instance, or NULL.
 	 * Note: the caller may not free the returned instance.
 	 */
-	Message* find(const string& clazz, const string& name, const bool isWrite, const bool isPassive=false);
+	Message* find(const string& circuit, const string& name, const bool isWrite, const bool isPassive=false);
 
 	/**
-	 * Find all active get @a Message instances for the specified class and name.
-	 * @param clazz the device class, or empty for any.
+	 * Find all active get @a Message instances for the specified circuit and name.
+	 * @param circuit the circuit name, or empty for any.
 	 * @param name the message name, or empty for any.
 	 * @param pb the primary ID byte, or -1 for any (default any).
-	 * @param completeMatch false to also include messages where the class and name matches only a part of the given class and name (default true).
+	 * @param completeMatch false to also include messages where the circuit and name matches only a part of the given circuit and name (default true).
 	 * @param withRead true to include read messages (default true).
 	 * @param withWrite true to include write messages (default false).
 	 * @param withPassive true to include passive messages (default false).
 	 * @return the found @a Message instances.
 	 * Note: the caller may not free the returned instances.
 	 */
-	deque<Message*> findAll(const string& clazz, const string& name, const short pb=-1, const bool completeMatch=true,
+	deque<Message*> findAll(const string& circuit, const string& name, const short pb=-1, const bool completeMatch=true,
 		const bool withRead=true, const bool withWrite=false, const bool withPassive=false);
 
 	/**
@@ -370,6 +396,12 @@ public:
 	 * Note: the caller may not free the returned instance.
 	 */
 	Message* find(SymbolString& master);
+
+	/**
+	 * Add a @a Message to the list of instances to poll.
+	 * @param message the @a Message to poll.
+	 */
+	void addPollMessage(Message* message);
 
 	/**
 	 * Removes all @a Message instances.
@@ -396,6 +428,12 @@ public:
 	 */
 	Message* getNextPoll();
 
+	/**
+	 * Write the message definitions to the @a ostream.
+	 * @param output the @a ostream to append the formatted messages to.
+	 */
+	void dump(ostream& output);
+
 private:
 
 	/** the minimum ID length used by any of the known @a Message instances. */
@@ -410,7 +448,7 @@ private:
 	/** the number of distinct passive @a Message instances stored in @a m_messagesByKey. */
 	size_t m_passiveMessageCount;
 
-	/** the known @a Message instances by lowercase class and name. */
+	/** the known @a Message instances by lowercase circuit and name. */
 	map<string, Message*> m_messagesByName;
 
 	/** the known @a Message instances by key. */

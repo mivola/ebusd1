@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -26,31 +26,33 @@
 #include <cstring>
 #include <algorithm>
 #include <locale>
+#include <iomanip>
 
 using namespace std;
 
 /** the bit mask of the source master number in the message key. */
 #define ID_SOURCE_MASK (0x1fLL << (8 * 7))
 
-Message::Message(const string clazz, const string name, const bool isWrite,
+Message::Message(const string circuit, const string name, const bool isWrite,
 		const bool isPassive, const string comment,
 		const unsigned char srcAddress, const unsigned char dstAddress,
-		const vector<unsigned char> id, DataField* data,
-		const unsigned int pollPriority)
-		: m_class(clazz), m_name(name), m_isWrite(isWrite),
+		const vector<unsigned char> id, DataField* data, const bool deleteData,
+		const unsigned char pollPriority)
+		: m_circuit(circuit), m_name(name), m_isWrite(isWrite),
 		  m_isPassive(isPassive), m_comment(comment),
 		  m_srcAddress(srcAddress), m_dstAddress(dstAddress),
-		  m_id(id), m_data(data), m_pollPriority(pollPriority),
+		  m_id(id), m_data(data), m_deleteData(deleteData),
+		  m_pollPriority(pollPriority),
 		  m_lastUpdateTime(0), m_lastChangeTime(0), m_pollCount(0), m_lastPollTime(0)
 {
 	int exp = 7;
 	unsigned long long key = (unsigned long long)(id.size()-2) << (8 * exp + 5);
-	if (isPassive == true)
+	if (isPassive)
 		key |= (unsigned long long)getMasterNumber(srcAddress) << (8 * exp--); // 0..25
 	else
 		key |= 0x1fLL << (8 * exp--); // special value for active
 	key |= (unsigned long long)dstAddress << (8 * exp--);
-	for (vector<unsigned char>::const_iterator it=id.begin(); it<id.end(); it++)
+	for (vector<unsigned char>::const_iterator it = id.begin(); it < id.end(); it++)
 		key |= (unsigned long long)*it << (8 * exp--);
 	m_key = key;
 }
@@ -58,10 +60,10 @@ Message::Message(const string clazz, const string name, const bool isWrite,
 Message::Message(const bool isWrite, const bool isPassive,
 		const unsigned char pb, const unsigned char sb,
 		DataField* data)
-		: m_class(), m_name(), m_isWrite(isWrite),
+		: m_circuit(), m_name(), m_isWrite(isWrite),
 		  m_isPassive(isPassive), m_comment(),
 		  m_srcAddress(SYN), m_dstAddress(SYN),
-		  m_data(data), m_pollPriority(0),
+		  m_data(data), m_deleteData(true), m_pollPriority(0),
 		  m_lastUpdateTime(0), m_lastChangeTime(0), m_pollCount(0), m_lastPollTime(0)
 {
 	m_id.push_back(pb);
@@ -87,13 +89,13 @@ string getDefault(const string value, vector<string>* defaults, size_t pos)
 
 result_t Message::create(vector<string>::iterator& it, const vector<string>::iterator end,
 		vector< vector<string> >* defaultsRows,
-		DataFieldTemplates* templates, Message*& returnValue)
+		DataFieldTemplates* templates, vector<Message*>& messages)
 {
-	// [type],[class],name,[comment],[QQ],[ZZ],id,fields...
+	// [type],[circuit],name,[comment],[QQ[;QQ]*],[ZZ],id,fields...
 	result_t result;
 	bool isWrite = false, isPassive = false;
 	string defaultName;
-	unsigned int pollPriority = 0;
+	unsigned char pollPriority = 0;
 	size_t defaultPos = 1;
 	if (it == end)
 		return RESULT_ERR_EOF;
@@ -102,25 +104,26 @@ result_t Message::create(vector<string>::iterator& it, const vector<string>::ite
 	if (it == end)
 		return RESULT_ERR_EOF;
 	size_t len = strlen(str);
-	if (len == 0) { // default: active get
+	if (len == 0) { // default: active read
 		defaultName = "r";
-	} else if (strncasecmp(str, "R", 1) == 0) { // active get
-		char last = str[len-1];
-		if (last >= '0' && last <= '9') { // poll priority (=active get)
-			pollPriority = last - '0';
-			defaultName = string(str).substr(0, len - 1); // cut off priority digit
+	} else {
+		defaultName = str;
+		char type = str[0];
+		if (type == 'r' || type == 'R') { // active read
+			char poll = str[1];
+			if (poll >= '0' && poll <= '9') { // poll priority (=active read)
+				pollPriority = (unsigned char)(poll - '0');
+				defaultName.erase(1, 1); // cut off priority digit
+			}
 		}
-		else
-			defaultName = str;
-	}
-	else if (strncasecmp(str, "W", 1) == 0) { // active set
-		isWrite = true;
-		defaultName = str;
-	}
-	else { // any other: passive set/get
-		isPassive = true;
-		isWrite = strcasecmp(str+len-1, "W") == 0; // if type ends with "w" it is treated as passive set
-		defaultName = str;
+		else if (type == 'w' || type == 'W') { // active write
+			isWrite = true;
+		}
+		else { // any other: passive read/write
+			isPassive = true;
+			type = str[1];
+			isWrite = type == 'w' || type == 'W'; // if type continues with "w" it is treated as passive write
+		}
 	}
 
 	vector<string>* defaults = NULL;
@@ -134,7 +137,7 @@ result_t Message::create(vector<string>::iterator& it, const vector<string>::ite
 		}
 	}
 
-	string clazz = getDefault(*it++, defaults, defaultPos++);
+	string circuit = getDefault(*it++, defaults, defaultPos++);
 	if (it == end)
 		return RESULT_ERR_EOF;
 
@@ -156,61 +159,72 @@ result_t Message::create(vector<string>::iterator& it, const vector<string>::ite
 	if (*str == 0)
 		srcAddress = SYN; // no specific source
 	else {
-		srcAddress = parseInt(str, 16, 0, 0xff, result);
+		srcAddress = (unsigned char)parseInt(str, 16, 0, 0xff, result);
 		if (result != RESULT_OK)
 			return result;
-		if (isMaster(srcAddress) == false)
+		if (!isMaster(srcAddress))
 			return RESULT_ERR_INVALID_ADDR;
 	}
 
 	str = getDefault(*it++, defaults, defaultPos++).c_str();
 	if (it == end)
 		 return RESULT_ERR_EOF;
-	unsigned char dstAddress;
-	if (*str == 0)
-		dstAddress = SYN; // no specific destination
-	else {
-		dstAddress = parseInt(str, 16, 0, 0xff, result);
-		if (result != RESULT_OK)
-			return result;
-		if (isValidAddress(dstAddress) == false)
-			return RESULT_ERR_INVALID_ADDR;
+	vector<unsigned char> dstAddresses;
+	bool isBroadcastOrMasterDestination = false;
+	if (*str == 0) {
+		dstAddresses.push_back(SYN); // no specific destination
+	} else {
+		istringstream stream(str);
+		string token;
+		bool first = true;
+		while (getline(stream, token, VALUE_SEPARATOR) != 0) {
+			unsigned char dstAddress = (unsigned char)parseInt(token.c_str(), 16, 0, 0xff, result);
+			if (result != RESULT_OK)
+				return result;
+			if (!isValidAddress(dstAddress))
+				return RESULT_ERR_INVALID_ADDR;
+			bool broadcastOrMaster = (dstAddress == BROADCAST) || isMaster(dstAddress);
+			if (first) {
+				isBroadcastOrMasterDestination = broadcastOrMaster;
+				first = false;
+			} else if (isBroadcastOrMasterDestination != broadcastOrMaster)
+				return RESULT_ERR_INVALID_ADDR;
+			dstAddresses.push_back(dstAddress);
+		}
 	}
 
 	vector<unsigned char> id;
-	for (int pos=0, useDefaults=1; pos<2; pos++) { // message id (PBSB, optional master data)
+	bool useDefaults = true;
+	for (int pos = 0; pos < 2 && it != end; pos++) { // message id (PBSB, optional master data)
 		string token = *it++;
-		if (useDefaults == 1) {
+		if (useDefaults) {
 			if (pos == 0 && token.size() > 0)
-				useDefaults = 0;
+				useDefaults = false;
 			else
 				token = getDefault("", defaults, defaultPos).append(token);
-
 		}
 		istringstream input(token);
-		if (it == end)
-			return RESULT_ERR_EOF;
-		while (input.eof() == false) {
+		while (!input.eof()) {
 			while (input.peek() == ' ')
 				input.get();
-			if (input.eof() == true) // no more digits
+			if (input.eof()) // no more digits
 				break;
 			token.clear();
-			token.push_back(input.get());
-			if (input.eof() == true) {
+			token.push_back((char)input.get());
+			if (input.eof()) {
 				return RESULT_ERR_INVALID_ARG; // too short hex
 			}
-			token.push_back(input.get());
+			token.push_back((char)input.get());
 
-			unsigned char value = parseInt(token.c_str(), 16, 0, 0xff, result);
+			unsigned char value = (unsigned char)parseInt(token.c_str(), 16, 0, 0xff, result);
 			if (result != RESULT_OK) {
 				return result; // invalid hex value
 			}
 			id.push_back(value);
 		}
-		if (pos == 0 && id.size() != 2) {
+		if (pos == 0 && id.size() != 2)
 			return RESULT_ERR_INVALID_ARG; // missing/too short/too PBSB
-		}
+
 		defaultPos++;
 	}
 	if (id.size() < 2 || id.size() > 6) {
@@ -239,20 +253,50 @@ result_t Message::create(vector<string>::iterator& it, const vector<string>::ite
 		}
 	}
 	DataField* data = NULL;
-	result = DataField::create(it, realEnd, templates, data, isWrite, dstAddress==SYN ? ESC : dstAddress);
-	if (result != RESULT_OK) {
-		return result;
+	if (it==realEnd) {
+		vector<SingleDataField*> fields;
+		data = new DataFieldSet("", "", fields);
+	} else {
+		result = DataField::create(it, realEnd, templates, data, isWrite, false, isBroadcastOrMasterDestination);
+		if (result != RESULT_OK) {
+			return result;
+		}
 	}
-	returnValue = new Message(clazz, name, isWrite, isPassive, comment, srcAddress, dstAddress, id, data, pollPriority);
+	if (id.size() + data->getLength(pt_masterData) > 2 + MAX_POS || data->getLength(pt_slaveData) > MAX_POS) {
+		// max NN exceeded
+		delete data;
+		return RESULT_ERR_INVALID_POS;
+	}
+	unsigned int index = 0;
+	bool multiple = dstAddresses.size()>1;
+	char num[10];
+	for (vector<unsigned char>::iterator it = dstAddresses.begin(); it != dstAddresses.end(); it++, index++) {
+		unsigned char dstAddress = *it;
+		string useCircuit = circuit;
+		if (multiple) {
+			sprintf(num, ".%d", index);
+			useCircuit = useCircuit + num;
+		}
+		messages.push_back(new Message(useCircuit, name, isWrite, isPassive, comment, srcAddress, dstAddress, id, data, index==0, pollPriority));
+	}
 	return RESULT_OK;
+}
+
+bool Message::setPollPriority(unsigned char priority)
+{
+	if (priority == m_pollPriority || m_isPassive)
+		return false;
+
+	m_pollPriority = priority;
+	return true;
 }
 
 result_t Message::prepareMaster(const unsigned char srcAddress, SymbolString& masterData, istringstream& input, char separator, const unsigned char dstAddress)
 {
-	if (m_isPassive == true)
+	if (m_isPassive)
 		return RESULT_ERR_INVALID_ARG; // prepare not possible
 
-	SymbolString master;
+	SymbolString master(false);
 	result_t result = master.push_back(srcAddress, false, false);
 	if (result != RESULT_OK)
 		return result;
@@ -272,91 +316,142 @@ result_t Message::prepareMaster(const unsigned char srcAddress, SymbolString& ma
 	if (result != RESULT_OK)
 		return result;
 	unsigned char addData = m_data->getLength(pt_masterData);
-	result = master.push_back(m_id.size() - 2 + addData, false, false);
+	result = master.push_back((unsigned char)(m_id.size() - 2 + addData), false, false);
 	if (result != RESULT_OK)
 		return result;
-	for (size_t i=2; i<m_id.size(); i++) {
+	for (size_t i = 2; i < m_id.size(); i++) {
 		result = master.push_back(m_id[i], false, false);
 		if (result != RESULT_OK)
 			return result;
 	}
-	result = m_data->write(input, pt_masterData, master, m_id.size() - 2, separator);
+	result = m_data->write(input, pt_masterData, master, (unsigned char)(m_id.size() - 2), separator);
 	if (result != RESULT_OK)
 		return result;
-	masterData = SymbolString(master, true);
+	time(&m_lastUpdateTime);
+	switch (master.compareMaster(m_lastMasterData)) {
+	case 1: // completely different
+		m_lastChangeTime = m_lastUpdateTime;
+		m_lastMasterData = masterData;
+		break;
+	case 2: // only master address is different
+		m_lastMasterData = masterData;
+		break;
+	}
+	masterData.addAll(master);
 	return result;
 }
 
 result_t Message::prepareSlave(SymbolString& slaveData)
 {
-	if (m_isPassive == false || m_isWrite == true)
+	if (!m_isPassive || m_isWrite)
 			return RESULT_ERR_INVALID_ARG; // prepare not possible
 
-	SymbolString slave;
+	SymbolString slave(false);
 	unsigned char addData = m_data->getLength(pt_slaveData);
 	result_t result = slave.push_back(addData, false, false);
 	if (result != RESULT_OK)
 		return result;
-	istringstream input;
+	istringstream input; // TODO create input from database of internal variables
 	result = m_data->write(input, pt_slaveData, slave, 0);
 	if (result != RESULT_OK)
 		return result;
-	slaveData = SymbolString(slave, true);
+	time(&m_lastUpdateTime);
+	if (slave != m_lastSlaveData) {
+		m_lastChangeTime = m_lastUpdateTime;
+		m_lastSlaveData = slave;
+	}
+	slaveData.addAll(slave);
 	return result;
 }
 
 result_t Message::decode(const PartType partType, SymbolString& data,
-		ostringstream& output, bool leadingSeparator,
-		bool verbose, const char* filterName,
-		char separator)
+		ostringstream& output, OutputFormat outputFormat,
+		bool leadingSeparator, const char* fieldName, signed char fieldIndex)
 {
 	unsigned char offset;
 	if (partType == pt_masterData)
-		offset = m_id.size() - 2;
+		offset = (unsigned char)(m_id.size() - 2);
 	else
 		offset = 0;
-	size_t startPos = output.str().length();
-	result_t result = m_data->read(partType, data, offset, output, leadingSeparator, verbose, filterName, separator);
-	if (result < RESULT_OK) {
+	result_t result = m_data->read(partType, data, offset, output, outputFormat, leadingSeparator, fieldName, fieldIndex);
+	if (result < RESULT_OK)
 		return result;
-	}
+	if (result == RESULT_EMPTY && fieldName != NULL)
+		return RESULT_ERR_NOTFOUND;
+
 	time(&m_lastUpdateTime);
-	string value = output.str().substr(startPos);
-	if (value != m_lastValue)
-		m_lastChangeTime = m_lastUpdateTime;
-	m_lastValue = value;
-	/*if (m_isPassive == false && answer == true) {
-		istringstream input; // TODO create input from database of internal variables
-		result_t result = m_data->write(input, masterData, m_id.size() - 2, slaveData, 0, separator);
-		if (result != RESULT_OK)
-			return result;
-	}*/
-	return RESULT_OK;
+	if (partType == pt_masterData) {
+		switch (data.compareMaster(m_lastMasterData)) {
+		case 1: // completely different
+			m_lastChangeTime = m_lastUpdateTime;
+			m_lastMasterData = data;
+			break;
+		case 2: // only master address is different
+			m_lastMasterData = data;
+			break;
+		}
+	} else if (partType == pt_slaveData) {
+		if (data != m_lastSlaveData) {
+			m_lastChangeTime = m_lastUpdateTime;
+			m_lastSlaveData = data;
+		}
+	}
+	return result;
 }
 
 result_t Message::decode(SymbolString& masterData, SymbolString& slaveData,
-		ostringstream& output, bool leadingSeparator,
-		bool verbose, const char* filterName,
-		char separator)
+		ostringstream& output, OutputFormat outputFormat,
+		bool leadingSeparator)
 {
-	unsigned char offset = m_id.size() - 2;
+	unsigned char offset = (unsigned char)(m_id.size() - 2);
 	size_t startPos = output.str().length();
-	result_t result = m_data->read(pt_masterData, masterData, offset, output, leadingSeparator, verbose, filterName, separator);
-	if (result < RESULT_OK) {
+	result_t result = m_data->read(pt_masterData, masterData, offset, output, outputFormat, leadingSeparator, NULL, -1);
+	if (result < RESULT_OK)
 		return result;
-	}
+	bool empty = result == RESULT_EMPTY;
 	offset = 0;
 	leadingSeparator = output.str().length() > startPos;
-	result = m_data->read(pt_slaveData, slaveData, offset, output, leadingSeparator, verbose, filterName, separator);
-	if (result < RESULT_OK) {
+	result = m_data->read(pt_slaveData, slaveData, offset, output, outputFormat, leadingSeparator, NULL, -1);
+	if (result < RESULT_OK)
 		return result;
-	}
+	if (result == RESULT_EMPTY && !empty)
+		result = RESULT_OK; // OK if at least one part was non-empty
 	time(&m_lastUpdateTime);
-	string value = output.str().substr(startPos);
-	if (value != m_lastValue)
+	switch (masterData.compareMaster(m_lastMasterData)) {
+	case 1: // completely different
 		m_lastChangeTime = m_lastUpdateTime;
-	m_lastValue = value;
-	return RESULT_OK;
+		m_lastMasterData = masterData;
+		break;
+	case 2: // only master address is different
+		m_lastMasterData = masterData;
+		break;
+	}
+	if (slaveData != m_lastSlaveData) {
+		m_lastChangeTime = m_lastUpdateTime;
+		m_lastSlaveData = slaveData;
+	}
+	return result;
+}
+
+result_t Message::decodeLastData(ostringstream& output, OutputFormat outputFormat,
+		bool leadingSeparator, const char* fieldName, signed char fieldIndex)
+{
+	unsigned char offset = (unsigned char)(m_id.size() - 2);
+	size_t startPos = output.str().length();
+	result_t result = m_data->read(pt_masterData, m_lastMasterData, offset, output, outputFormat, leadingSeparator, fieldName, fieldIndex);
+	if (result < RESULT_OK)
+		return result;
+	bool empty = result == RESULT_EMPTY;
+	offset = 0;
+	leadingSeparator = output.str().length() > startPos;
+	result = m_data->read(pt_slaveData, m_lastSlaveData, offset, output, outputFormat, leadingSeparator, fieldName, fieldIndex);
+	if (result < RESULT_OK)
+		return result;
+	if (result == RESULT_EMPTY && !empty)
+		result = RESULT_OK; // OK if at least one part was non-empty
+	else if (result == RESULT_EMPTY && fieldName != NULL)
+		return RESULT_ERR_NOTFOUND;
+	return result;
 }
 
 bool Message::isLessPollWeight(const Message* other)
@@ -377,6 +472,41 @@ bool Message::isLessPollWeight(const Message* other)
 	return false;
 }
 
+void Message::dump(ostream& output)
+{
+	if (m_isPassive) {
+		output << "u";
+		if (m_isWrite)
+			output << "w";
+	} else if (m_isWrite)
+		output << "w";
+	else {
+		output << "r";
+		if (m_pollPriority>0)
+			output << static_cast<unsigned>(m_pollPriority);
+	}
+	DataField::dumpString(output, m_circuit);
+	DataField::dumpString(output, m_name);
+	DataField::dumpString(output, m_comment);
+	output << FIELD_SEPARATOR;
+	if (m_srcAddress != SYN)
+		output << hex << setw(2) << setfill('0') << static_cast<unsigned>(m_srcAddress);
+	output << FIELD_SEPARATOR;
+	if (m_dstAddress != SYN)
+		output << hex << setw(2) << setfill('0') << static_cast<unsigned>(m_dstAddress);
+	output << FIELD_SEPARATOR;
+	unsigned int cnt = 0;
+	for (vector<unsigned char>::const_iterator it = m_id.begin(); it < m_id.end(); it++) {
+		if (cnt++ == 2)
+			output << FIELD_SEPARATOR;
+		output << hex << setw(2) << setfill('0') << static_cast<unsigned>(*it);
+	}
+	if (cnt <= 2)
+		output << FIELD_SEPARATOR; // no further ID bytes besides PBSB
+	output << FIELD_SEPARATOR;
+	m_data->dump(output);
+}
+
 
 string strtolower(const string& str)
 {
@@ -389,41 +519,36 @@ result_t MessageMap::add(Message* message)
 {
 	unsigned long long key = message->getKey();
 	map<unsigned long long, Message*>::iterator keyIt = m_messagesByKey.find(key);
-	if (keyIt != m_messagesByKey.end()) {
+	if (keyIt != m_messagesByKey.end())
 		return RESULT_ERR_DUPLICATE; // duplicate key
-	}
+
 	bool isPassive = message->isPassive();
 	bool isWrite = message->isWrite();
-	string clazz = strtolower(message->getClass());
+	string circuit = strtolower(message->getCircuit());
 	string name = strtolower(message->getName());
-	string nameKey = string(isPassive ? "P" : (isWrite ? "W" : "R")) + clazz + FIELD_SEPARATOR + name;
+	string nameKey = string(isPassive ? "P" : (isWrite ? "W" : "R")) + circuit + FIELD_SEPARATOR + name;
 	map<string, Message*>::iterator nameIt = m_messagesByName.find(nameKey);
-	if (nameIt != m_messagesByName.end()) {
+	if (nameIt != m_messagesByName.end())
 		return RESULT_ERR_DUPLICATE; // duplicate key
-	}
 
 	m_messagesByName[nameKey] = message;
 	m_messageCount++;
-	if (isPassive == true)
+	if (isPassive)
 		m_passiveMessageCount++;
 
-	nameKey = string(isPassive ? "-P" : (isWrite ? "-W" : "-R")) + name; // also store without class
+	nameKey = string(isPassive ? "-P" : (isWrite ? "-W" : "-R")) + name; // also store without circuit
 	nameIt = m_messagesByName.find(nameKey);
-	if (nameIt == m_messagesByName.end()) {
-		m_messagesByName[nameKey] = message; // only store first key without class
-	}
+	if (nameIt == m_messagesByName.end())
+		m_messagesByName[nameKey] = message; // only store first key without circuit
 
-	unsigned char idLength = message->getId().size() - 2;
+	unsigned char idLength = (unsigned char)(message->getId().size() - 2);
 	if (idLength < m_minIdLength)
 		m_minIdLength = idLength;
 	if (idLength > m_maxIdLength)
 		m_maxIdLength = idLength;
 	m_messagesByKey[key] = message;
 
-	if (message->getPollPriority() > 0) {
-		message->m_lastPollTime = m_pollMessages.size();
-		m_pollMessages.push(message);
-	}
+	addPollMessage(message);
 
 	return RESULT_OK;
 }
@@ -438,35 +563,38 @@ result_t MessageMap::addFromFile(vector<string>::iterator& begin, const vector<s
 
 	istringstream stream(types);
 	string type;
+	vector<Message*> messages;
 	while (getline(stream, type, VALUE_SEPARATOR) != 0) {
 		*restart = type;
 		begin = restart;
-		Message* message = NULL;
-		result = Message::create(begin, end, defaults, arg, message);
+		messages.clear();
+		result = Message::create(begin, end, defaults, arg, messages);
+		for (vector<Message*>::iterator it = messages.begin(); it != messages.end(); it++) {
+			Message* message = *it;
+			if (result == RESULT_OK)
+				result = add(message);
+			if (result != RESULT_OK)
+				delete message; // delete all remaining messages on error
+		}
 		if (result != RESULT_OK)
 			return result;
-		result = add(message);
-		if (result != RESULT_OK) {
-			delete message;
-			return result;
-		}
 		begin = restart;
 	}
 	return result;
 }
 
-Message* MessageMap::find(const string& clazz, const string& name, const bool isWrite, const bool isPassive)
+Message* MessageMap::find(const string& circuit, const string& name, const bool isWrite, const bool isPassive)
 {
-	string lclass = strtolower(clazz);
+	string lcircuit = strtolower(circuit);
 	string lname = strtolower(name);
-	for (int i=0; i<2; i++) {
+	for (int i = 0; i < 2; i++) {
 		string key;
 		if (i == 0)
-			key = string(isPassive ? "P" : (isWrite ? "W" : "R")) + lclass + FIELD_SEPARATOR + lname;
-		else if (clazz.length() == 0)
-			key = string(isPassive ? "-P" : (isWrite ? "-W" : "-R")) + lname; // second try: without class
+			key = string(isPassive ? "P" : (isWrite ? "W" : "R")) + lcircuit + FIELD_SEPARATOR + lname;
+		else if (lcircuit.length() == 0)
+			key = string(isPassive ? "-P" : (isWrite ? "-W" : "-R")) + lname; // second try: without circuit
 		else
-			continue; // not allowed without class
+			continue; // not allowed without circuit
 		map<string, Message*>::iterator it = m_messagesByName.find(key);
 		if (it != m_messagesByName.end())
 			return it->second;
@@ -475,42 +603,42 @@ Message* MessageMap::find(const string& clazz, const string& name, const bool is
 	return NULL;
 }
 
-deque<Message*> MessageMap::findAll(const string& clazz, const string& name, const short pb, const bool completeMatch,
+deque<Message*> MessageMap::findAll(const string& circuit, const string& name, const short pb, const bool completeMatch,
 	const bool withRead, const bool withWrite, const bool withPassive)
 {
 	deque<Message*> ret;
 
-	string lclass = strtolower(clazz);
+	string lcircuit = strtolower(circuit);
 	string lname = strtolower(name);
-	bool checkClass = clazz.length() > 0;
+	bool checkCircuit = lcircuit.length() > 0;
 	bool checkName = name.length() > 0;
 	bool checkPb = pb >= 0;
 	for (map<string, Message*>::iterator it = m_messagesByName.begin(); it != m_messagesByName.end(); it++) {
 		if (it->first[0] == '-') // avoid duplicates: instances stored multiple times have a key starting with "-"
 			continue;
 		Message* message = it->second;
-		if (checkClass == true) {
-			string check = strtolower(message->getClass());
-			if (completeMatch ? (check != lclass) : (check.find(lclass) == check.npos))
+		if (checkCircuit) {
+			string check = strtolower(message->getCircuit());
+			if (completeMatch ? (check != lcircuit) : (check.find(lcircuit) == check.npos))
 				continue;
 		}
-		if (checkName == true) {
+		if (checkName) {
 			string check = strtolower(message->getName());
 			if (completeMatch ? (check != lname) : (check.find(lname) == check.npos))
 				continue;
 		}
-		if (checkPb == true && message->getId()[0] != pb)
+		if (checkPb && message->getId()[0] != pb)
 			continue;
-		if (message->isPassive() == true) {
-			if (withPassive == false)
+		if (message->isPassive()) {
+			if (!withPassive)
 				continue;
 		}
-		else if (message->isWrite() == true) {
-			if (withWrite == false)
+		else if (message->isWrite()) {
+			if (!withWrite)
 				continue;
 		}
 		else {
-			if (withRead == false)
+			if (!withRead)
 				continue;
 		}
 		ret.push_back(message);
@@ -538,7 +666,7 @@ Message* MessageMap::find(SymbolString& master)
 		key |= (unsigned long long)master[1] << (8 * exp--);
 		key |= (unsigned long long)master[2] << (8 * exp--);
 		key |= (unsigned long long)master[3] << (8 * exp--);
-		for (unsigned char i=0; i<idLength; i++)
+		for (unsigned char i = 0; i < idLength; i++)
 			key |= (unsigned long long)master[5 + i] << (8 * exp--);
 
 		map<unsigned long long , Message*>::iterator it = m_messagesByKey.find(key);
@@ -559,10 +687,18 @@ Message* MessageMap::find(SymbolString& master)
 	return NULL;
 }
 
+void MessageMap::addPollMessage(Message* message)
+{
+	if (message != NULL && message->getPollPriority() > 0) {
+		message->m_lastPollTime = m_pollMessages.size();
+		m_pollMessages.push(message);
+	}
+}
+
 void MessageMap::clear()
 {
 	// clear poll messages
-	while (m_pollMessages.empty() == false) {
+	while (!m_pollMessages.empty()) {
 		m_pollMessages.top();
 		m_pollMessages.pop();
 	}
@@ -584,7 +720,7 @@ void MessageMap::clear()
 
 Message* MessageMap::getNextPoll()
 {
-	if (m_pollMessages.empty() == true)
+	if (m_pollMessages.empty())
 		return NULL;
 	Message* ret = m_pollMessages.top();
 	m_pollMessages.pop();
@@ -592,4 +728,21 @@ Message* MessageMap::getNextPoll()
 	time(&(ret->m_lastPollTime));
 	m_pollMessages.push(ret); // re-insert at new position
 	return ret;
+}
+
+void MessageMap::dump(ostream& output)
+{
+	bool first = true;
+	for (map<string, Message*>::iterator it = m_messagesByName.begin(); it != m_messagesByName.end(); it++) {
+		if (it->first[0] == '-') // skip instances stored multiple times (key starting with "-")
+			continue;
+		Message* message = it->second;
+		if (first)
+			first = false;
+		else
+			cout << endl;
+		message->dump(cout);
+	}
+	if (!first)
+		cout << endl;
 }

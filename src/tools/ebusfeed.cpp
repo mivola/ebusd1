@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Roland Jax 2012-2014 <ebusd@liwest.at>,
- * John Baier 2014-2015 <ebusd@johnm.de>
+ * John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -37,7 +37,7 @@ using namespace std;
 struct options
 {
 	const char* device; //!< device to write to [/dev/ttyUSB60]
-	int time; //!< delay between bytes in us [10000]
+	unsigned int time; //!< delay between bytes in us [10000]
 
 	const char* dumpFile; //!< dump file to read
 };
@@ -67,7 +67,7 @@ static const char argpdoc[] =
 	"  2. create symbol links to appropriate devices, e.g.\n"
 	"     'ln -s /dev/pts/2 /dev/ttyUSB60'\n"
 	"     'ln -s /dev/pts/3 /dev/ttyUSB20'\n"
-	"  3. start "PACKAGE": '"PACKAGE" -f -d /dev/ttyUSB20'\n"
+	"  3. start "PACKAGE": '"PACKAGE" -f -d /dev/ttyUSB20 --nodevicecheck'\n"
 	"  4. start ebusfeed: 'ebusfeed /path/to/ebus_dump.bin'\n";
 
 /** the description of the accepted arguments. */
@@ -101,8 +101,8 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 		opt->device = arg;
 		break;
 	case 't': // --time=10000
-		opt->time = strtol(arg, &strEnd, 10);
-		if (strEnd == NULL || *strEnd != 0 || opt->time < 1000 || opt->time > 100000000) {
+		opt->time = (unsigned int)strtoul(arg, &strEnd, 10);
+		if (strEnd == NULL || strEnd == arg || *strEnd != 0 || opt->time < 1000 || opt->time > 100000000) {
 			argp_error(state, "invalid time");
 			return EINVAL;
 		}
@@ -131,7 +131,7 @@ int main(int argc, char* argv[])
 	if (argp_parse(&argp, argc, argv, ARGP_IN_ORDER, NULL, &opt) != 0)
 		return EINVAL;
 
-	Device* device = Device::create(opt.device, true, NULL);
+	Device* device = Device::create(opt.device, false, NULL);
 	if (device == NULL) {
 		cout << "unable to create device " << opt.device << endl;
 		return EINVAL;
@@ -140,18 +140,18 @@ int main(int argc, char* argv[])
 	if (result != RESULT_OK)
 		cout << "unable to open " << opt.device << ": " << getResultCode(result) << endl;
 
-	if (device->isValid() == false)
+	if (!device->isValid())
 		cout << "device " << opt.device << " not available" << endl;
 	else {
 		cout << "device opened" << endl;
 
 		fstream file(opt.dumpFile, ios::in | ios::binary);
 
-		if (file.is_open() == true) {
+		if (file.is_open()) {
 
 			while (true) {
-				unsigned char byte = file.get();
-				if (file.eof() == true)
+				unsigned char byte = (unsigned char)file.get();
+				if (file.eof())
 					break;
 				cout << hex << setw(2) << setfill('0')
 				     << static_cast<unsigned>(byte) << endl;

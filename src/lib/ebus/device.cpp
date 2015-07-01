@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -42,15 +42,15 @@ Device::~Device()
 	m_dumpRawStream.close();
 }
 
-Device* Device::create(const char* name, const bool checkDevice,
+Device* Device::create(const char* name, const bool checkDevice, const bool readonly,
 		void (*logRawFunc)(const unsigned char byte, bool received))
 {
 	if (strchr(name, '/') == NULL) {
 		char* pos = strchr((char*)name, ':');
 		if (pos != NULL) {
 			char* end = NULL;
-			unsigned int port = strtoul(pos+1, &end, 10);
-			if (end == NULL || *end != 0 || port < 1 || port > 65535) {
+			unsigned long int port = strtoul(pos+1, &end, 10);
+			if (end == NULL || end == pos+1 || *end != 0 || port < 1 || port > 65535) {
 				return NULL; // invalid port
 			}
 			struct sockaddr_in address;
@@ -67,11 +67,11 @@ Device* Device::create(const char* name, const bool checkDevice,
 			}
 			free(host);
 			address.sin_family = AF_INET;
-			address.sin_port = htons(port);
-			return new NetworkDevice(name, address, logRawFunc);
+			address.sin_port = htons((uint16_t)port);
+			return new NetworkDevice(name, address, readonly, logRawFunc);
 		}
 	}
-	return new SerialDevice(name, checkDevice, logRawFunc);
+	return new SerialDevice(name, checkDevice, readonly, logRawFunc);
 }
 
 void Device::close()
@@ -87,7 +87,7 @@ bool Device::isValid()
 	if (m_fd == -1)
 		return false;
 
-	if (m_checkDevice == true)
+	if (m_checkDevice)
 		checkDevice();
 
 	return m_fd != -1;
@@ -95,13 +95,13 @@ bool Device::isValid()
 
 result_t Device::send(const unsigned char value)
 {
-	if (isValid() == false)
+	if (!isValid())
 		return RESULT_ERR_DEVICE;
 
-	if (write(m_fd, &value, 1) != 1)
+	if (m_readonly || write(m_fd, &value, 1) != 1)
 		return RESULT_ERR_SEND;
 
-	if (m_logRaw == true && m_logRawFunc != NULL)
+	if (m_logRaw && m_logRawFunc != NULL)
 		(*m_logRawFunc)(value, false);
 
 	return RESULT_OK;
@@ -109,7 +109,7 @@ result_t Device::send(const unsigned char value)
 
 result_t Device::recv(const long timeout, unsigned char& value)
 {
-	if (isValid() == false)
+	if (!isValid())
 		return RESULT_ERR_DEVICE;
 
 	if (timeout > 0) {
@@ -117,8 +117,8 @@ result_t Device::recv(const long timeout, unsigned char& value)
 		struct timespec tdiff;
 
 		// set select timeout
-		tdiff.tv_sec = 0;
-		tdiff.tv_nsec = timeout*1000;
+		tdiff.tv_sec = timeout/1000000;
+		tdiff.tv_nsec = (timeout%1000000)*1000;
 
 #ifdef HAVE_PPOLL
 		int nfds = 1;
@@ -153,10 +153,10 @@ result_t Device::recv(const long timeout, unsigned char& value)
 	if (nbytes < 0)
 		return RESULT_ERR_DEVICE;
 
-	if (m_logRaw == true && m_logRawFunc != NULL)
+	if (m_logRaw && m_logRawFunc != NULL)
 		(*m_logRawFunc)(value, true);
 
-	if (m_dumpRaw == true && m_dumpRawStream.is_open() == true) {
+	if (m_dumpRaw && m_dumpRawStream.is_open()) {
 		m_dumpRawStream.write((char*)&value, 1);
 		m_dumpRawFileSize++;
 		if ((m_dumpRawFileSize%1024) == 0)
@@ -182,7 +182,7 @@ void Device::setDumpRaw(bool dumpRaw)
 
 	m_dumpRaw = dumpRaw;
 
-	if (dumpRaw == false || m_dumpRawFile == NULL)
+	if (!dumpRaw || m_dumpRawFile == NULL)
 		m_dumpRawStream.close();
 	else {
 		m_dumpRawStream.open(m_dumpRawFile, ios::out | ios::binary | ios::app);
@@ -197,7 +197,7 @@ void Device::setDumpRawFile(const char* dumpFile) {
 	m_dumpRawStream.close();
 	m_dumpRawFile = dumpFile;
 
-	if (m_dumpRaw == true && m_dumpRawFile != NULL) {
+	if (m_dumpRaw && m_dumpRawFile != NULL) {
 		m_dumpRawStream.open(m_dumpRawFile, ios::out | ios::binary | ios::app);
 		m_dumpRawFileSize = 0;
 	}

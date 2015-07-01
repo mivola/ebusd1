@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -83,6 +83,9 @@ private:
 	/** the queue for @a NetMessage instances. */
 	WQueue<NetMessage*> m_netQueue;
 
+	/** the path for HTML files served by the HTTP port. */
+	string m_htmlPath;
+
 	/**
 	 * Decode and execute client message.
 	 * @param data the data string to decode (may be empty).
@@ -91,7 +94,26 @@ private:
 	 * @param running set to false when the server shall be stopped.
 	 * @return result string to send back to the client.
 	 */
-	string decodeMessage(const string& data, bool& connected, bool& listening, bool& running);
+	string decodeMessage(const string& data, const bool isHttp, bool& connected, bool& listening, bool& running);
+
+	/**
+	 * Parse the hex master message from the remaining arguments.
+	 * @param args the arguments passed to the command.
+	 * @param argIndex the index of the first argument to parse.
+	 * @param master the master @a SymbolString to write the data to.
+	 * @return the result from parsing the arguments.
+	 */
+	result_t parseHexMaster(vector<string> &args, size_t argPos, SymbolString& master);
+
+	/**
+	 * Prepare the master part for the @a Message, send it to the bus and wait for the answer.
+	 * @param message the @a Message instance.
+	 * @param master the master data @a SymbolString for writing symbols to.
+	 * @param inputStr the input @a string from which to read master values (if any).
+	 * @param slave the @a SymbolString that will be filled with retrieved slave data.
+	 * @return the result code.
+	 */
+	result_t readFromBus(Message* message, SymbolString& master, string inputStr, SymbolString& slave);
 
 	/**
 	 * Execute the read command.
@@ -128,6 +150,13 @@ private:
 	 * @return the result string.
 	 */
 	string executeState(vector<string> &args);
+
+	/**
+	 * Execute the grab command.
+	 * @param args the arguments passed to the command (starting with the command itself), or empty for help.
+	 * @return the result string.
+	 */
+	string executeGrab(vector<string> &args);
 
 	/**
 	 * Execute the scan command.
@@ -185,6 +214,14 @@ private:
 	 * @return the result string.
 	 */
 	string executeHelp();
+
+	/**
+	 * Execute the HTTP GET command.
+	 * @param args the arguments passed to the command (starting with the command itself).
+	 * @param connected set to false when the client connection shall be closed.
+	 * @return the result string.
+	 */
+	string executeGet(vector<string> &args, bool& connected);
 
 	/**
 	 * Get the updates received since the specified time.

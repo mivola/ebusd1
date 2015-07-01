@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -45,37 +45,32 @@ class SymbolString
 
 public:
 	/**
-	 * Creates a new unescaped empty instance.
+	 * Creates a new empty escaped or unescaped instance.
+	 * @param escaped whether to create an escaped instance.
 	 */
-	SymbolString() : m_unescapeState(1), m_crc(0) {}
+	SymbolString(const bool escaped=true) : m_unescapeState(escaped ? 0 : 1), m_crc(0) {}
 
 	/**
-	 * Creates a new escaped instance from an unescaped hex string and adds the calculated CRC.
-	 * @param str the unescaped hex string.
+	 * Add all symbols from the other @a SymbolString and the calculated CRC if escaped.
+	 * @param str the @a SymbolString to copy from.
 	 */
-	SymbolString(const string& str);
+	void addAll(const SymbolString& str);
 
 	/**
-	 * Creates a new escaped or unescaped instance from another @a SymbolString and adds the calculated CRC.
-	 * @param str the @a SymbolString top copy from.
-	 * @param escape true for an escaped instance, false for an unescaped instance.
-	 * @param addCrc whether to add the calculated CRC as last symbol.
+	 * Parse the escaped or unescaped hex @a string, add all symbols, and add the calculated CRC if escaped.
+	 * @param str the hex @a string.
+	 * @param isEscaped whether the hex string is escaped.
+	 * @return @a RESULT_OK on success, or an error code.
 	 */
-	SymbolString(const SymbolString& str, const bool escape, const bool addCrc=true);
-
-	/**
-	 * Creates a new unescaped instance from a hex string.
-	 * @param isEscaped whether the hex string is escaped and shall be unescaped.
-	 * @param str the hex string.
-	 */
-	SymbolString(const string& str, const bool isEscaped);
+	result_t parseHex(const string& str, const bool isEscaped=false);
 
 	/**
 	 * Returns the symbols as hex string.
 	 * @param unescape whether to unescape an escaped instance.
+	 * @param skipLastSymbol whether to skip the last symbol (probably the CRC).
 	 * @return the symbols as hex string.
 	 */
-	const string getDataStr(const bool unescape=true);
+	const string getDataStr(const bool unescape=true, const bool skipLastSymbol=true);
 
 	/**
 	 * Returns a reference to the symbol at the specified index.
@@ -85,30 +80,32 @@ public:
 	unsigned char& operator[](const size_t index) { if (index >= m_data.size()) m_data.resize(index+1, 0); return m_data[index]; }
 
 	/**
-	 * Returns the symbol at the specified index.
-	 * @param index the index of the symbol to return.
-	 * @return the symbol at the specified index.
-	 */
-	const unsigned char& operator[](const size_t index) const { return m_data[index]; }
-
-	/**
 	 * Returns whether this instance is equal to the other instance.
 	 * @param other the other instance.
 	 * @return true if this instance is equal to the other instance (i.e. both escaped or both unescaped and same symbols).
 	 */
-	bool operator==(SymbolString& other) {
-		return m_unescapeState==other.m_unescapeState && m_data==other.m_data;
-		/*bool ret = m_unescapeState==other.m_unescapeState && m_data==other.m_data;
-		for (int i=0; i<m_data.size(); i++) {
-			cout<<setw(2)<<setfill('0')<<hex<<static_cast<unsigned>(m_data[i])<<" ";
-		}
-		cout<<"["<<static_cast<unsigned>(m_unescapeState)<<"]";
-		cout<<(ret?" == ":" != ");
-		for (int i=0; i<other.m_data.size(); i++) {
-			cout<<setw(2)<<setfill('0')<<hex<<static_cast<unsigned>(other.m_data[i])<<" ";
-		}
-		cout<<"["<<static_cast<unsigned>(other.m_unescapeState)<<"]"<<endl;
-		return ret;*/
+	bool operator==(SymbolString& other) { return m_unescapeState==other.m_unescapeState && m_data==other.m_data; }
+
+	/**
+	 * Returns whether this instance is different from the other instance.
+	 * @param other the other instance.
+	 * @return true if this instance is different from the other instance.
+	 */
+	bool operator!=(SymbolString& other) { return m_unescapeState!=other.m_unescapeState || m_data!=other.m_data; }
+
+	/**
+	 * Compares this instance to the other instance while treating both as master data (i.e. starting with the master address and ending with the CRC).
+	 * @param other the other instance.
+	 * @return 0 if this instance is equal to the other instance (i.e. both escaped or both unescaped and same symbols),
+	 * 1 if this instance is completely different to the other instance,
+	 * 2 if this instance only differs from the other instance in the first byte (the master address).
+	 */
+	int compareMaster(SymbolString& other) {
+		if (m_unescapeState!=other.m_unescapeState || m_data.size()!=other.m_data.size()) return 1;
+		if (m_data==other.m_data) return 0;
+		if (m_data.size()==1) return 2;
+		if (equal(m_data.begin()+1, m_data.end()-1, other.m_data.begin()+1)) return 2;
+		return 1;
 	}
 
 	/**
@@ -135,9 +132,15 @@ public:
 	unsigned char getCRC() const { return m_crc; }
 
 	/**
-	 * Clears the symbols.
+	 * Clear the symbols.
 	 */
 	void clear() { m_data.clear(); m_unescapeState = m_unescapeState==0 ? 0 : 1; m_crc = 0; }
+
+	/**
+	 * Clear the symbols and adjust the escape mode.
+	 * @param escape true to set to an escaped instance, false to set to an unescaped instance.
+	 */
+	void clear(const bool escape) { m_data.clear(); m_unescapeState = escape ? 0 : 1; m_crc = 0; }
 
 private:
 
@@ -149,14 +152,12 @@ private:
 		: m_data(str.m_data), m_unescapeState(str.m_unescapeState), m_crc(str.m_crc) {}
 
 	/**
-	 * Updates the calculated CRC in @a m_crc by adding a value.
+	 * Update the calculated CRC in @a m_crc by adding a value.
 	 * @param value the (escaped) value to add to the calculated CRC in @a m_crc.
 	 */
 	void addCRC(const unsigned char value);
 
-	/**
-	 * the string of bus symbols.
-	 */
+	/** the string of bus symbols. */
 	vector<unsigned char> m_data;
 
 	/**
@@ -166,9 +167,7 @@ private:
 	 */
 	int m_unescapeState;
 
-	/**
-	 * the calculated CRC.
-	 */
+	/** the calculated CRC. */
 	unsigned char m_crc;
 };
 
@@ -179,6 +178,20 @@ private:
  * @return <code>true</code> if the specified address is a master address.
  */
 bool isMaster(unsigned char addr);
+
+/**
+ * Returns whether the address is a slave address of one of the 25 masters.
+ * @param addr the address to check.
+ * @return <code>true</code> if the specified address is a slave address of a master.
+ */
+bool isSlaveMaster(unsigned char addr);
+
+/**
+ * Returns the master address associated with the specified address (master or slave).
+ * @param addr the address to check.
+ * @return the master address, or SYN if the specified address is neither a master address nor a slave address of a master.
+ */
+unsigned char getMasterAddress(unsigned char addr);
 
 /**
  * Returns the number of the master if the address is a valid bus address.

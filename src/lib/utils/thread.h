@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Roland Jax 2012-2014 <ebusd@liwest.at>,
- * John Baier 2014-2015 <ebusd@johnm.de>
+ * John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -53,7 +53,7 @@ public:
 	 * Return whether this @a Thread is still running and not yet stopped.
 	 * @return true if this @a Thread is till running and not yet stopped.
 	 */
-	virtual bool isRunning() { return m_running == true && m_stopped == false; }
+	virtual bool isRunning() { return m_running && !m_stopped; }
 
 	/**
 	 * Create the native thread and set its name.

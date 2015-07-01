@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -33,11 +33,25 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-/** the name of the PID file. */
+/** the path and name of the PID file. */
 #ifdef PACKAGE_PIDFILE
 #define PID_FILE_NAME PACKAGE_PIDFILE
 #else
 #define PID_FILE_NAME "/var/run/ebusd.pid"
+#endif
+
+/** the path and name of the log file. */
+#ifdef PACKAGE_LOGFILE
+#define LOG_FILE_NAME PACKAGE_LOGFILE
+#else
+#define LOG_FILE_NAME "/var/log/ebusd.log"
+#endif
+
+/** the default path of the configuration files. */
+#ifdef PACKAGE_CONFIGPATH
+#define CONFIG_PATH PACKAGE_CONFIGPATH
+#else
+#define CONFIG_PATH "/etc/ebusd"
 #endif
 
 /** the opened PID file, or NULL. */
@@ -50,20 +64,24 @@ static bool isDaemon = false;
 static struct options opt = {
 	"/dev/ttyUSB0", // device
 	false, // noDeviceCheck
-	"/etc/ebusd", // configPath
-	false, // checkConfig
+	false, // readonly
+	CONFIG_PATH, // configPath
+	0, // checkConfig
 	5, // pollInterval
 	0xFF, // address
 	false, // answer
 	9400, // acquireTimeout
 	2, // acquireRetries
 	2, // sendRetries
-	15000, // receiveTimeout
-	5, // masterCount
+	SLAVE_RECV_TIMEOUT, // receiveTimeout
+	0, // masterCount
+	false, // generateSyn
 	false, // foreground
 	8888, // port
 	false, // localOnly
-	"/var/log/ebusd.log", // logFile
+	0, // httpPort
+	"/var/ebusd/html", // htmlPath
+	PACKAGE_LOGFILE, // logFile
 	false, // logRaw
 	false, // dump
 	"/tmp/ebus_dump.bin", // dumpFile
@@ -84,29 +102,35 @@ static const char argpdoc[] =
 	"A daemon for access to eBUS devices.";
 
 #define O_CHKCFG  1
-#define O_POLINT  2
-#define O_ANSWER  3
-#define O_ACQTIM  4
-#define O_ACQRET  5
-#define O_SNDRET  6
-#define O_RCVTIM  7
-#define O_MASCNT  8
-#define O_LOCAL   9
-#define O_LOGARE 10
-#define O_LOGLEV 11
-#define O_LOGRAW 12
-#define O_DMPFIL 13
-#define O_DMPSIZ 14
+#define O_DMPCFG  2
+#define O_POLINT  3
+#define O_ANSWER  4
+#define O_ACQTIM  5
+#define O_ACQRET  6
+#define O_SNDRET  7
+#define O_RCVTIM  8
+#define O_MASCNT  9
+#define O_GENSYN 10
+#define O_LOCAL  11
+#define O_HTTPPT 12
+#define O_HTMLPA 13
+#define O_LOGARE 14
+#define O_LOGLEV 15
+#define O_LOGRAW 16
+#define O_DMPFIL 17
+#define O_DMPSIZ 18
 
 /** the definition of the known program arguments. */
 static const struct argp_option argpoptions[] = {
 	{NULL,             0,        NULL,    0, "Device options:", 1 },
 	{"device",         'd',      "DEV",   0, "Use DEV as eBUS device (serial device or ip:port) [/dev/ttyUSB0]", 0 },
 	{"nodevicecheck",  'n',      NULL,    0, "Skip serial eBUS device test", 0 },
+	{"readonly",       'r',      NULL,    0, "Only read from device, never write to it", 0 },
 
 	{NULL,             0,        NULL,    0, "Message configuration options:", 2 },
-	{"configpath",     'c',      "PATH",  0, "Read CSV config files from PATH [/etc/ebusd]", 0 },
-	{"checkconfig",    O_CHKCFG, NULL,    0, "Only check CSV config files, then stop", 0 },
+	{"configpath",     'c',      "PATH",  0, "Read CSV config files from PATH [" CONFIG_PATH "]", 0 },
+	{"checkconfig",    O_CHKCFG, NULL,    0, "Check CSV config files, then stop", 0 },
+	{"dumpconfig",     O_DMPCFG, NULL,    0, "Check and dump CSV config files, then stop", 0 },
 	{"pollinterval",   O_POLINT, "SEC",   0, "Poll for data every SEC seconds (0=disable) [5]", 0 },
 
 	{NULL,             0,        NULL,    0, "eBUS options:", 3 },
@@ -116,16 +140,19 @@ static const struct argp_option argpoptions[] = {
 	{"acquireretries", O_ACQRET, "COUNT", 0, "Retry bus acquisition COUNT times [2]", 0 },
 	{"sendretries",    O_SNDRET, "COUNT", 0, "Repeat failed sends COUNT times [2]", 0 },
 	{"receivetimeout", O_RCVTIM, "USEC",  0, "Expect a slave to answer within USEC us [15000]", 0 },
-	{"numbermasters",  O_MASCNT, "COUNT", 0, "Expect COUNT masters on the bus [5]", 0 },
+	{"numbermasters",  O_MASCNT, "COUNT", 0, "Expect COUNT masters on the bus, 0 for auto detection [0]", 0 },
+	{"generatesyn",    O_GENSYN, NULL,    0, "Enable AUTO-SYN symbol generation", 0 },
 
 	{NULL,             0,        NULL,    0, "Daemon options:", 4 },
 	{"foreground",     'f',      NULL,    0, "Run in foreground", 0 },
-	{"port",           'p',      "PORT",  0, "Listen for client connections on PORT [8888]", 0 },
-	{"localhost",      O_LOCAL,  NULL,    0, "Listen on 127.0.0.1 interface only", 0 },
+	{"port",           'p',      "PORT",  0, "Listen for command line connections on PORT [8888]", 0 },
+	{"localhost",      O_LOCAL,  NULL,    0, "Listen for command line connections on 127.0.0.1 interface only", 0 },
+	{"httpport",       O_HTTPPT, "PORT",  0, "Listen for HTTP connections on PORT, 0 to disable [0]", 0 },
+	{"htmlpath",       O_HTMLPA, "PATH",  0, "Path for HTML files served by HTTP port [/var/ebusd/html]", 0 },
 
 	{NULL,             0,        NULL,    0, "Log options:", 5 },
-	{"logfile",        'l',      "FILE",  0, "Write log to FILE (only for daemon) [/var/log/ebusd.log]", 0 },
-	{"logareas",       O_LOGARE, "AREAS", 0, "Only write log for matching AREAS: main,network,bus,update,all [all]", 0 },
+	{"logfile",        'l',      "FILE",  0, "Write log to FILE (only for daemon) [" PACKAGE_LOGFILE "]", 0 },
+	{"logareas",       O_LOGARE, "AREAS", 0, "Only write log for matching AREA(S): main,network,bus,update,all [all]", 0 },
 	{"loglevel",       O_LOGLEV, "LEVEL", 0, "Only write log below or equal to LEVEL: error/notice/info/debug [notice]", 0 },
 	{"lograwdata",     O_LOGRAW, NULL,    0, "Log each received/sent byte on the bus", 0 },
 
@@ -134,7 +161,6 @@ static const struct argp_option argpoptions[] = {
 	{"dumpfile",       O_DMPFIL, "FILE",  0, "Dump received bytes to FILE [/tmp/ebus_dump.bin]", 0 },
 	{"dumpsize",       O_DMPSIZ, "SIZE",  0, "Make dump files no larger than SIZE kB [100]", 0 },
 
-	//{NULL,             0,        NULL,    0, "Other:", 7 },
 	{NULL,             0,        NULL,    0, NULL, 0 },
 };
 
@@ -161,6 +187,9 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 	case 'n': // --nodevicecheck
 		opt->noDeviceCheck = true;
 		break;
+	case 'r': // --readonly
+		opt->readonly = true;
+		break;
 
 	// Message configuration options:
 	case 'c': // --configpath=/etc/ebusd
@@ -171,7 +200,10 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 		opt->configPath = arg;
 		break;
 	case O_CHKCFG: // --checkconfig
-		opt->checkConfig = true;
+		opt->checkConfig = 1;
+		break;
+	case O_DMPCFG: // --dumpconfig
+		opt->checkConfig = 2;
 		break;
 	case O_POLINT: // --pollinterval=5
 		opt->pollInterval = parseInt(arg, 10, 0, 3600, result);
@@ -183,7 +215,7 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 
 	// eBUS options:
 	case 'a': // --address=FF
-		opt->address = parseInt(arg, 16, 0, 0xff, result);
+		opt->address = (unsigned char)parseInt(arg, 16, 0, 0xff, result);
 		if (result != RESULT_OK || !isMaster(opt->address)) {
 			argp_error(state, "invalid address");
 			return EINVAL;
@@ -220,12 +252,15 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 			return EINVAL;
 		}
 		break;
-	case O_MASCNT: // --numbermasters=5
-		opt->masterCount = parseInt(arg, 10, 1, 25, result);
+	case O_MASCNT: // --numbermasters=0
+		opt->masterCount = parseInt(arg, 10, 0, 25, result);
 		if (result != RESULT_OK) {
 			argp_error(state, "invalid numbermasters");
 			return EINVAL;
 		}
+		break;
+	case O_GENSYN: // --generatesyn
+		opt->generateSyn = true;
 		break;
 
 	// Daemon options:
@@ -233,7 +268,7 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 		opt->foreground = true;
 		break;
 	case 'p': // --port=8888
-		opt->port = parseInt(arg, 10, 1, 65535, result);
+		opt->port = (uint16_t)parseInt(arg, 10, 1, 65535, result);
 		if (result != RESULT_OK) {
 			argp_error(state, "invalid port");
 			return EINVAL;
@@ -241,6 +276,20 @@ error_t parse_opt(int key, char *arg, struct argp_state *state)
 		break;
 	case O_LOCAL: // --localhost
 		opt->localOnly = true;
+		break;
+	case O_HTTPPT: // --httpport
+		opt->httpPort = (uint16_t)parseInt(arg, 10, 1, 65535, result);
+		if (result != RESULT_OK) {
+			argp_error(state, "invalid port");
+			return EINVAL;
+		}
+		break;
+	case O_HTMLPA: // --htmlpath=/var/ebusd/html
+		if (arg == NULL || arg[0] == 0 || strcmp("/", arg) == 0) {
+			argp_error(state, "invalid htmlpath");
+			return EINVAL;
+		}
+		opt->htmlPath = arg;
 		break;
 
 	// Log options:
@@ -317,7 +366,7 @@ void daemonize()
 
 	// Change the current working directory. This prevents the current
 	// directory from being locked; hence not being able to remove it.
-	if (chdir("/tmp") < 0) { // TODO use constant
+	if (chdir("/tmp") < 0) {
 		logError(lf_main, "daemon chdir() failed");
 		exit(EXIT_FAILURE);
 	}
@@ -424,32 +473,33 @@ static result_t readConfigFiles(const string path, const string extension, DataF
 	if (dir == NULL)
 		return RESULT_ERR_NOTFOUND;
 
-	dirent* d = readdir(dir);
+	dirent* d;
 
-	while (d != NULL) {
-		if (d->d_type == DT_DIR) {
-			string fn = d->d_name;
+	while ((d = readdir(dir)) != NULL) {
+		string fn = d->d_name;
 
-			if (fn != "." && fn != "..") {
-				const string p = path + "/" + d->d_name;
-				result_t result = readConfigFiles(p, extension, templates, messages, verbose);
-				if (result != RESULT_OK)
-					return result;
-			}
+		if (fn == "." || fn == "..")
+			continue;
+
+		const string p = path + "/" + d->d_name;
+		struct stat stat_buf;
+
+		if (stat(p.c_str(), &stat_buf) != 0)
+			continue;
+
+		if (S_ISDIR(stat_buf.st_mode)) {
+			result_t result = readConfigFiles(p, extension, templates, messages, verbose);
+			if (result != RESULT_OK)
+				return result;
 		}
-		else if (d->d_type == DT_REG || d->d_type == DT_LNK) {
-			string fn = d->d_name;
-
+		else if (S_ISREG(stat_buf.st_mode)) {
 			if (fn.find(extension, (fn.length() - extension.length())) != string::npos
 				&& fn != "_templates" + extension) {
-				const string p = path + "/" + d->d_name;
 				result_t result = messages->readFromFile(p, templates, verbose);
 				if (result != RESULT_OK)
 					return result;
 			}
 		}
-
-		d = readdir(dir);
 	}
 	closedir(dir);
 
@@ -465,17 +515,15 @@ result_t loadConfigFiles(DataFieldTemplates* templates, MessageMap* messages, bo
 	if (result == RESULT_OK)
 		logInfo(lf_main, "read templates");
 	else
-		logError(lf_main, "error reading templates: %s", getResultCode(result));
+		logError(lf_main, "error reading templates: %s, %s", getResultCode(result), templates->getLastError().c_str());
 
 	result = readConfigFiles(path, ".csv", templates, messages, verbose);
 	if (result == RESULT_OK)
 		logInfo(lf_main, "read config files");
 	else
-		logError(lf_main, "error reading config files: %s", getResultCode(result));
+		logError(lf_main, "error reading config files: %s, %s", getResultCode(result), messages->getLastError().c_str());
 
-	logNotice(lf_main, "message DB: %d ", messages->size());
-	logNotice(lf_main, "updates DB: %d ", messages->size(true));
-	logNotice(lf_main, "polling DB: %d ", messages->sizePoll());
+	logNotice(lf_main, "found messages: %d (%d poll, %d update)", messages->size(), messages->sizePoll(), messages->size(true));
 
 	return result;
 }
@@ -488,7 +536,7 @@ result_t loadConfigFiles(DataFieldTemplates* templates, MessageMap* messages, bo
  */
 static void logRawData(const unsigned char byte, bool received)
 {
-	if (received == true)
+	if (received)
 		logNotice(lf_bus, "<%02x", byte);
 	else
 		logNotice(lf_bus, ">%02x", byte);
@@ -509,11 +557,15 @@ int main(int argc, char* argv[])
 
 	DataFieldTemplates templates;
 	MessageMap messages;
-	if (opt.checkConfig == true) {
+	if (opt.checkConfig) {
 		logNotice(lf_main, "Performing configuration check...");
 
-		loadConfigFiles(&templates, &messages, true);
+		result_t result = loadConfigFiles(&templates, &messages, true);
 
+		if (result == RESULT_OK && opt.checkConfig > 1) {
+			logNotice(lf_main, "Configuration dump:");
+			messages.dump(cout);
+		}
 		messages.clear();
 		templates.clear();
 
@@ -521,13 +573,13 @@ int main(int argc, char* argv[])
 	}
 
 	// open the device
-	Device *device = Device::create(opt.device, opt.noDeviceCheck==false, &logRawData);
+	Device *device = Device::create(opt.device, !opt.noDeviceCheck, opt.readonly, &logRawData);
 	if (device == NULL) {
 		logError(lf_main, "unable to create device %s", opt.device);
 		return EINVAL;
 	}
 
-	if (opt.foreground == false) {
+	if (!opt.foreground) {
 		setLogFile(opt.logFile);
 		daemonize(); // make me daemon
 	}
@@ -537,7 +589,7 @@ int main(int argc, char* argv[])
 	signal(SIGINT, signalHandler);
 	signal(SIGTERM, signalHandler);
 
-	logNotice(lf_main, "ebusd started");
+	logNotice(lf_main, PACKAGE_STRING " started");
 
 	// load configuration files
 	loadConfigFiles(&templates, &messages);

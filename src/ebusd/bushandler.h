@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014-2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -36,8 +36,8 @@
 
 using namespace std;
 
-/* the maximum allowed time [us] for retrieving a symbol from an addressed slave. */
-//#define SLAVE_RECV_TIMEOUT 10000
+/** the default time [us] for retrieving a symbol from an addressed slave. */
+#define SLAVE_RECV_TIMEOUT 15000
 
 /** the maximum allowed time [us] for retrieving the AUTO-SYN symbol (45ms + 2*1,2% + 1 Symbol). */
 #define SYN_TIMEOUT 50800
@@ -79,7 +79,7 @@ public:
 
 	/**
 	 * Constructor.
-	 * @param master the master data @a SymbolString to send.
+	 * @param master the escaped master data @a SymbolString to send.
 	 * @param deleteOnFinish whether to automatically delete this @a BusRequest when finished.
 	 */
 	BusRequest(SymbolString& master, const bool deleteOnFinish)
@@ -101,7 +101,7 @@ public:
 
 protected:
 
-	/** the master data @a SymbolString to send. */
+	/** the escaped master data @a SymbolString to send. */
 	SymbolString& m_master;
 
 	/** the number of times a send is repeated due to lost arbitration. */
@@ -145,7 +145,7 @@ public:
 
 private:
 
-	/** the master data @a SymbolString. */
+	/** the escaped master data @a SymbolString. */
 	SymbolString m_master;
 
 	/** the associated @a Message. */
@@ -191,7 +191,7 @@ public:
 
 private:
 
-	/** the master data @a SymbolString. */
+	/** the escaped master data @a SymbolString. */
 	SymbolString m_master;
 
 	/** the currently queried @a Message. */
@@ -216,11 +216,11 @@ public:
 
 	/**
 	 * Constructor.
-	 * @param master reference to the master data @a SymbolString to send.
+	 * @param master the escaped master data @a SymbolString to send.
 	 * @param slave reference to @a SymbolString for filling in the received slave data.
 	 */
 	ActiveBusRequest(SymbolString& master, SymbolString& slave)
-		: BusRequest(master, false), m_result(RESULT_SYN), m_slave(slave) {}
+		: BusRequest(master, false), m_result(RESULT_ERR_NO_SIGNAL), m_slave(slave) {}
 
 	/**
 	 * Destructor.
@@ -258,24 +258,28 @@ public:
 	 * @param failedSendRetries the number of times a failed send is repeated (other than lost arbitration).
 	 * @param slaveRecvTimeout the maximum time in microseconds an addressed slave is expected to acknowledge.
 	 * @param busAcquireTimeout the maximum time in microseconds for bus acquisition.
-	 * @param lockCount the number of AUTO-SYN symbols before sending is allowed after lost arbitration.
+	 * @param lockCount the number of AUTO-SYN symbols before sending is allowed after lost arbitration, or 0 for auto detection.
+	 * @param generateSyn whether to enable AUTO-SYN symbol generation.
 	 * @param pollInterval the interval in seconds in which poll messages are cycled, or 0 if disabled.
 	 */
 	BusHandler(Device* device, MessageMap* messages,
 			const unsigned char ownAddress, const bool answer,
 			const unsigned int busLostRetries, const unsigned int failedSendRetries,
 			const unsigned int busAcquireTimeout, const unsigned int slaveRecvTimeout,
-			const unsigned int lockCount, const unsigned int pollInterval)
+			const unsigned int lockCount, const bool generateSyn,
+			const unsigned int pollInterval)
 		: m_device(device), m_messages(messages),
-		  m_ownMasterAddress(ownAddress), m_ownSlaveAddress((ownAddress+5)&0xff), m_answer(answer),
+		  m_ownMasterAddress(ownAddress), m_ownSlaveAddress((unsigned char)(ownAddress+5)), m_answer(answer),
 		  m_busLostRetries(busLostRetries), m_failedSendRetries(failedSendRetries),
 		  m_busAcquireTimeout(busAcquireTimeout), m_slaveRecvTimeout(slaveRecvTimeout),
-		  m_lockCount(lockCount), m_remainLockCount(lockCount),
+		  m_masterCount(1), m_autoLockCount(lockCount==0), m_lockCount(lockCount<=3 ? 3 : lockCount), m_remainLockCount(m_autoLockCount),
+		  m_generateSynInterval(generateSyn ? SYN_TIMEOUT*getMasterNumber(ownAddress)+SYMBOL_DURATION : 0),
 		  m_pollInterval(pollInterval), m_lastReceive(0), m_lastPoll(0),
 		  m_currentRequest(NULL), m_nextSendPos(0),
+		  m_symPerSec(0), m_maxSymPerSec(0),
 		  m_state(bs_noSignal), m_repeat(false),
-		  m_commandCrcValid(false), m_responseCrcValid(false),
-		  m_scanMessage(NULL) {
+		  m_command(false), m_commandCrcValid(false), m_response(false), m_responseCrcValid(false),
+		  m_scanMessage(NULL), m_grabUnknownMessages(false) {
 		memset(m_seenAddresses, 0, sizeof(m_seenAddresses));
 	}
 
@@ -290,7 +294,7 @@ public:
 
 	/**
 	 * Send a message on the bus and wait for the answer.
-	 * @param master the @a SymbolString with the master data to send.
+	 * @param master the escaped @a SymbolString with the master data to send.
 	 * @param slave the @a SymbolString that will be filled with retrieved slave data.
 	 * @return the result code.
 	 */
@@ -300,13 +304,6 @@ public:
 	 * Main thread entry.
 	 */
 	virtual void run();
-
-	/**
-	 * Get the last received data for the @a Message.
-	 * @param message the @a Message instance.
-	 * @return the last received data for the @a Message, or the empty string if not available.
-	 */
-	string getReceivedData(Message* message);
 
 	/**
 	 * Initiate a scan of the slave addresses.
@@ -322,10 +319,40 @@ public:
 	void formatScanResult(ostringstream& output);
 
 	/**
+	 * Start or stop grabbing unknown messages.
+	 * @param enable true to enable grabbing, false to disable it.
+	 */
+	void enableGrab(bool enable=true);
+
+	/**
+	 * Format the grabbed unknown messages to the @a ostringstream.
+	 * @param output the @a ostringstream to format the messages to.
+	 */
+	void formatGrabResult(ostringstream& output);
+
+	/**
 	 * Return true when a signal on the bus is available.
 	 * @return true when a signal on the bus is available.
 	 */
 	bool hasSignal() { return m_state != bs_noSignal; }
+
+	/**
+	 * Return the current symbol rate.
+	 * @return the number of received symbols in the last second.
+	 */
+	unsigned int getSymbolRate() { return m_symPerSec; }
+
+	/**
+	 * Return the maximum seen symbol rate.
+	 * @return the maximum number of received symbols per second ever seen.
+	 */
+	unsigned int getMaxSymbolRate() { return m_maxSymPerSec; }
+
+	/**
+	 * Return the number of masters already seen.
+	 * @return the number of masters already seen (including ebusd itself).
+	 */
+	unsigned int getMasterCount() { return m_masterCount; }
 
 private:
 
@@ -376,11 +403,20 @@ private:
 	/** the maximum time in microseconds an addressed slave is expected to acknowledge. */
 	const unsigned int m_slaveRecvTimeout;
 
+	/** the number of masters already seen. */
+	unsigned int m_masterCount;
+
+	/** whether m_lockCount shall be detected automatically. */
+	const bool m_autoLockCount;
+
 	/** the number of AUTO-SYN symbols before sending is allowed after lost arbitration. */
-	const unsigned int m_lockCount;
+	unsigned int m_lockCount;
 
 	/** the remaining number of AUTO-SYN symbols before sending is allowed again. */
 	unsigned int m_remainLockCount;
+
+	/** the interval in microseconds after which to generate an AUTO-SYN symbol, or 0 if disabled. */
+	long m_generateSynInterval;
 
 	/** the interval in seconds in which poll messages are cycled, or 0 if disabled. */
 	const unsigned int m_pollInterval;
@@ -401,8 +437,14 @@ private:
 	WQueue<BusRequest*> m_finishedRequests;
 
 	/** the offset of the next symbol that needs to be sent from the command or response,
-	 * (only relevant if m_request is set and state is bs_command or bs_response). */
+	 * (only relevant if m_request is set and state is @a bs_command or @a bs_response). */
 	unsigned char m_nextSendPos;
+
+	/** the number of received symbols in the last second. */
+	unsigned int m_symPerSec;
+
+	/** the maximum number of received symbols per second ever seen. */
+	unsigned int m_maxSymPerSec;
 
 	/** the current @a BusState. */
 	BusState m_state;
@@ -410,13 +452,13 @@ private:
 	/** whether the current message part is being repeated. */
 	bool m_repeat;
 
-	/** the received/sent command. */
+	/** the unescaped received command. */
 	SymbolString m_command;
 
 	/** whether the command CRC is valid. */
 	bool m_commandCrcValid;
 
-	/** the received/sent response. */
+	/** the unescaped received response or escaped response to send. */
 	SymbolString m_response;
 
 	/** whether the response CRC is valid. */
@@ -430,6 +472,12 @@ private:
 
 	/** the scan results by slave address. */
 	map<unsigned char, string> m_scanResults;
+
+	/** whether to grab unknown messages. */
+	bool m_grabUnknownMessages;
+
+	/** the grabbed unknown messages by ID prefix (QQZZPBSBNNDD with up to 4 DD bytes).*/
+	map<string, string> m_grabbedUnknownMessages;
 
 };
 

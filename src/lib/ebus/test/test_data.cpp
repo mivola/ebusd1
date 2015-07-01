@@ -1,7 +1,7 @@
 /*
- * Copyright (C) John Baier 2014 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
- * This file is part of libebus.
+ * This file is part of ebusd.
  *
  * libebus is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,14 +26,15 @@ using namespace std;
 void verify(bool expectFailMatch, string type, string input,
 		bool match, string expectStr, string gotStr)
 {
-	if (expectFailMatch == true) {
-		if (match == true)
+	match = match && expectStr == gotStr;
+	if (expectFailMatch) {
+		if (match)
 			cout << "  failed " << type << " match >" << input
 			        << "< error: unexpectedly succeeded" << endl;
 		else
 			cout << "  failed " << type << " match >" << input << "< OK" << endl;
 	}
-	else if (match == true)
+	else if (match)
 		cout << "  " << type << " match >" << input << "< OK" << endl;
 	else
 		cout << "  " << type << " match >" << input << "< error: got >"
@@ -50,7 +51,8 @@ int main()
 		{"x,,str:10",  "Hallo, Du ",                    "10fe07000a48616c6c6f2c20447520", "00", ""},
 		{"x,,str:10",  "          ",                    "10fe07000a20202020202020202020", "00", ""},
 		{"x,,str:11",  "",                              "10fe07000a20202020202020202020", "00", "rW"},
-		{"x,,hex",      "20",                            "10fe07000120",                   "00", ""},
+		{"x,,str:24",  "abcdefghijklmnopqrstuvwx",      "10fe0700186162636465666768696a6b6c6d6e6f707172737475767778", "00", ""},
+		{"x,,hex",     "20",                            "10fe07000120",                   "00", ""},
 		{"x,,hex:10",  "48 61 6c 6c 6f 2c 20 44 75 21", "10fe07000a48616c6c6f2c20447521", "00", ""},
 		{"x,,hex:11",  "",                              "10fe07000a48616c6c6f2c20447521", "00", "rW"},
 		{"x,,bda",   "26.10.2014","10fe07000426100614", "00", ""}, // Sunday
@@ -117,42 +119,58 @@ int main()
 		{"x,,bcd:4","99999999", "10feffff0199999999", "00", ""},
 		{"x,,bcd:4","-",        "10feffff01ffffffff", "00", ""},
 		{"x,,bcd:4","",         "10feffff0100009a00", "00", "rw"},
+		{"x,,hcd","1234567",  "10feffff01432d1701", "00", ""},
+		{"x,,hcd","0",        "10feffff0100000000", "00", ""},
+		{"x,,hcd","99999999", "10feffff0163636363", "00", ""},
+		{"x,,hcd","",         "10feffff0100006400", "00", "rw"},
 		{"x,,str:16", "0123456789ABCDEF",  "10feffff1130313233343536373839414243444546", "00", ""},
 		{"x,,uch:17", "",    "10feffff00", "00", "c"},
-		{"x,s,uch", "0",   "1025ffff0310111213", "0300010203", "W"},
-		{"x,s,uch", "0",   "1025ffff00", "0100", ""},
+		{"x,s,uch", "0",     "1025ffff0310111213", "0300010203", "W"},
+		{"x,s,uch", "0",     "1025ffff00", "0100", ""},
 		{"x,s,uch,,,,y,m,uch", "3;2","1025ffff0103", "0102", ""},
-		{"x,,uch", "38",    "10feffff0126", "00", ""},
-		{"x,,uch", "0",     "10feffff0100", "00", ""},
-		{"x,,uch", "254",   "10feffff01fe", "00", ""},
-		{"x,,uch", "-",     "10feffff01ff", "00", ""},
-		{"x,,sch", "-90",   "10feffff01a6", "00", ""},
-		{"x,,sch", "0",     "10feffff0100", "00", ""},
-		{"x,,sch", "-1",    "10feffff01ff", "00", ""},
-		{"x,,sch", "-",     "10feffff0180", "00", ""},
-		{"x,,sch", "-127",  "10feffff0181", "00", ""},
-		{"x,,sch", "127",   "10feffff017f", "00", ""},
-		{"x,,d1b", "-90",   "10feffff01a6", "00", ""},
-		{"x,,d1b", "0",     "10feffff0100", "00", ""},
-		{"x,,d1b", "-1",    "10feffff01ff", "00", ""},
-		{"x,,d1b", "-",     "10feffff0180", "00", ""},
-		{"x,,d1b", "-127",  "10feffff0181", "00", ""},
-		{"x,,d1b", "127",   "10feffff017f", "00", ""},
-		{"x,,d1c", "19.5",  "10feffff0127", "00", ""},
-		{"x,,d1c", "0.0",   "10feffff0100", "00", ""},
-		{"x,,d1c", "100.0", "10feffff01c8", "00", ""},
-		{"x,,d1c", "-",     "10feffff01ff", "00", ""},
+		{"x,,uch", "38",     "10feffff0126", "00", ""},
+		{"x,,uch", "0",      "10feffff0100", "00", ""},
+		{"x,,uch", "254",    "10feffff01fe", "00", ""},
+		{"x,,uch", "-",      "10feffff01ff", "00", ""},
+		{"x,,uch,10", "3.8", "10feffff0126", "00", ""},
+		{"x,,uch,-10", "380","10feffff0126", "00", ""},
+		{"x,,sch", "-90",    "10feffff01a6", "00", ""},
+		{"x,,sch", "0",      "10feffff0100", "00", ""},
+		{"x,,sch", "-1",     "10feffff01ff", "00", ""},
+		{"x,,sch", "-",      "10feffff0180", "00", ""},
+		{"x,,sch", "-127",   "10feffff0181", "00", ""},
+		{"x,,sch", "127",    "10feffff017f", "00", ""},
+		{"x,,sch,10", "-9.0","10feffff01a6", "00", ""},
+		{"x,,sch,-10","-900","10feffff01a6", "00", ""},
+		{"x,,d1b", "-90",    "10feffff01a6", "00", ""},
+		{"x,,d1b", "0",      "10feffff0100", "00", ""},
+		{"x,,d1b", "-1",     "10feffff01ff", "00", ""},
+		{"x,,d1b", "-",      "10feffff0180", "00", ""},
+		{"x,,d1b", "-127",   "10feffff0181", "00", ""},
+		{"x,,d1b", "127",    "10feffff017f", "00", ""},
+		{"x,,d1b,-10","-900","10feffff01a6", "00", ""},
+		{"x,,d1c", "19.5",   "10feffff0127", "00", ""},
+		{"x,,d1c", "0.0",    "10feffff0100", "00", ""},
+		{"x,,d1c", "100.0",  "10feffff01c8", "00", ""},
+		{"x,,d1c", "-",      "10feffff01ff", "00", ""},
 		{"x,,uin", "38",     "10feffff022600", "00", ""},
 		{"x,,uin", "0",      "10feffff020000", "00", ""},
 		{"x,,uin", "65534",  "10feffff02feff", "00", ""},
 		{"x,,uin", "-",      "10feffff02ffff", "00", ""},
 		{"x,,uin,10", "3.8", "10feffff022600", "00", ""},
+		{"x,,uin,-10","380", "10feffff022600", "00", ""},
+		{"uin10,uin,-10","", "", "", "t"},                  // template
+		{"x,,uin10","380",   "10feffff022600", "00", ""},   // template reference
+		{"x,,uin10,-10","3800","10feffff022600", "00", ""}, // template reference, valid divider product
+		{"x,,uin10,10","","", "", "c"},                     // template reference, invalid divider product
 		{"x,,sin", "-90",    "10feffff02a6ff", "00", ""},
 		{"x,,sin", "0",      "10feffff020000", "00", ""},
 		{"x,,sin", "-1",     "10feffff02ffff", "00", ""},
 		{"x,,sin", "-",      "10feffff020080", "00", ""},
 		{"x,,sin", "-32767", "10feffff020180", "00", ""},
 		{"x,,sin", "32767",  "10feffff02ff7f", "00", ""},
+		{"x,,sin,10","-9.0", "10feffff02a6ff", "00", ""},
+		{"x,,sin,-10","-900","10feffff02a6ff", "00", ""},
 		{"x,,flt", "-0.090", "10feffff02a6ff", "00", ""},
 		{"x,,flt", "0.000",  "10feffff020000", "00", ""},
 		{"x,,flt", "-0.001", "10feffff02ffff", "00", ""},
@@ -175,9 +193,13 @@ int main()
 		{"x,,ulg", "0",          "10feffff0400000000", "00", ""},
 		{"x,,ulg", "4294967294", "10feffff04feffffff", "00", ""},
 		{"x,,ulg", "-",          "10feffff04ffffffff", "00", ""},
+		{"x,,ulg,10","3.8",      "10feffff0426000000", "00", ""},
+		{"x,,ulg,-10","380",     "10feffff0426000000", "00", ""},
 		{"x,,slg", "-90",        "10feffff04a6ffffff", "00", ""},
 		{"x,,slg", "0",          "10feffff0400000000", "00", ""},
 		{"x,,slg", "-1",         "10feffff04ffffffff", "00", ""},
+		{"x,,slg,10", "-9.0",    "10feffff04a6ffffff", "00", ""},
+		{"x,,slg,-10", "-900",   "10feffff04a6ffffff", "00", ""},
 		{"x,,bi3", "1",            "10feffff0108", "00", ""},
 		{"x,,bi3", "0",            "10feffff0100", "00", ""},
 		{"x,,bi3,0=off;1=on","on", "10feffff0108", "00", ""},
@@ -191,6 +213,13 @@ int main()
 		{"x,,bi3:2,0=off;1=on;2=auto;3=eco","auto", "10feffff0110", "00", ""},
 		{"x,,bi3:2,0=off;1=on","on", "10feffff0108", "00", ""},
 		{"x,,bi3:2,0=off;1=on","off","10feffff0100", "00", ""},
+		{"x,,bi3:2,0=off;1=on","1", "10feffff0108", "00", "n"},
+		{"x,,bi3:2,0=off;1=on,ja/nein,Wahrheitswert","x=on ja/nein [Wahrheitswert]", "10feffff0108", "00", "v"},
+		{"x,,bi3:2,0=off;1=on,ja/nein,Wahrheitswert","x=1 ja/nein [Wahrheitswert]", "10feffff0108", "00", "vn"},
+		{"x,,bi3:2,0=off;1=on,ja/nein,Wahrheitswert","\n    {\"name\": \"x\", \"value\": \"on\"}", "10feffff0108", "00", "j"},
+		{"x,,bi3:2,0=off;1=on,ja/nein,Wahrheitswert","\n    {\"name\": \"x\", \"value\": \"on\", \"unit\": \"ja/nein\", \"comment\": \"Wahrheitswert\"}", "10feffff0108", "00", "vj"},
+		{"x,,bi3:2,0=off;1=on,ja/nein,Wahrheitswert","\n    {\"name\": \"x\", \"value\": 1}", "10feffff0108", "00", "nj"},
+		{"x,,bi3:2,0=off;1=on,ja/nein,Wahrheitswert","\n    {\"name\": \"x\", \"value\": 1, \"unit\": \"ja/nein\", \"comment\": \"Wahrheitswert\"}", "10feffff0108", "00", "vnj"},
 		{"x,,uch,1=test;2=high;3=off;0x10=on","on","10feffff0110", "00", ""},
 		{"x,s,uch","3","1050ffff00", "0103", ""},
 		{"x,,d2b,,°C,Aussentemperatur","x=18.004 °C [Aussentemperatur]","10fe0700090112", "00", "v"},
@@ -201,13 +230,17 @@ int main()
 		{"x,,bi3,,,,y,,bi5", "0;0",            "10feffff0100", "00", ""}, // bit combination
 		{"x,,bi3,,,,y,,bi7,,,,t,,uch", "0;0;9","10feffff020009", "00", ""}, // bit combination
 		{"x,,bi6:2,,,,y,,bi0:2,,,,t,,uch", "2;1;9","10feffff03800109", "00", ""}, // bit combination
+		{"x,,BI0;BI1;BI2;BI3;BI4;BI5;BI6;BI7", "0;0;1;0;0;0;0;0","ff75b50900", "0104", ""}, // bits
 		{"temp,d2b,,°C,Aussentemperatur","","", "", "t"}, // template with relative pos
 		{"x,,temp","18.004","10fe0700020112", "00", ""}, // reference to template
+		{"x,,temp,10","1.8004","10fe0700020112", "00", ""}, // reference to template, valid divider product
+		{"x,,temp,-10","","", "", "c"}, // reference to template, invalid divider product
 		{"relrel,d2b,,,,y,d1c","","", "", "t"},   // template struct with relative pos
 		{"x,,relrel","18.004;9.5","10fe070003011213", "00", ""}, // reference to template struct
 		{"trelrel,temp;temp","","", "", "t"},   // template struct with relative pos and ref to templates
 		{"x,,trelrel","18.004;19.008","10fe07000401120213", "00", ""}, // reference to template struct
 		{"x,,temp,,,,y,,d1c","18.004;9.5","10fe070003011213", "00", ""}, // reference to template, normal def
+		{"x,,temp;HEX:2","18.004;13 14","10fe07000401121314", "00", ""}, // reference to template and base type
 	};
 	DataFieldTemplates* templates = new DataFieldTemplates();
 	DataField* fields = NULL;
@@ -215,8 +248,18 @@ int main()
 		string check[5] = checks[i];
 		istringstream isstr(check[0]);
 		string expectStr = check[1];
-		SymbolString mstr(check[2], false);
-		SymbolString sstr(check[3], false);
+		SymbolString mstr(false);
+		result_t result = mstr.parseHex(check[2]);
+		if (result != RESULT_OK) {
+			cout << "\"" << check[0] << "\": parse \"" << check[2] << "\" error: " << getResultCode(result) << endl;
+			continue;
+		}
+		SymbolString sstr(false);
+		result = sstr.parseHex(check[3]);
+		if (result != RESULT_OK) {
+			cout << "\"" << check[0] << "\": parse \"" << check[3] << "\" error: " << getResultCode(result) << endl;
+			continue;
+		}
 		string flags = check[4];
 		bool isSet = flags.find('s') != string::npos;
 		bool failedCreate = flags.find('c') != string::npos;
@@ -225,6 +268,8 @@ int main()
 		bool failedWrite = flags.find('w') != string::npos;
 		bool failedWriteMatch = flags.find('W') != string::npos;
 		bool verbose = flags.find('v') != string::npos;
+		bool numeric = flags.find('n') != string::npos;
+		bool json = flags.find('j') != string::npos;
 		bool isTemplate = flags.find('t') != string::npos;
 		string item;
 		vector<string> entries;
@@ -237,8 +282,8 @@ int main()
 			fields = NULL;
 		}
 		vector<string>::iterator it = entries.begin();
-		result_t result = DataField::create(it, entries.end(), templates, fields, isSet, isTemplate ? SYN : mstr[1]);
-		if (failedCreate == true) {
+		result = DataField::create(it, entries.end(), templates, fields, isSet, isTemplate, !isTemplate && (mstr[1]==BROADCAST || isMaster(mstr[1])));
+		if (failedCreate) {
 			if (result == RESULT_OK)
 				cout << "\"" << check[0] << "\": failed create error: unexpectedly succeeded" << endl;
 			else
@@ -260,8 +305,7 @@ int main()
 		cout << "\"" << check[0] << "\": create OK" << endl;
 		if (isTemplate) {
 			// store new template
-			string name = fields->getName();
-			result = templates->add(fields, true);
+			result = templates->add(fields, "", true);
 			if (result == RESULT_OK) {
 				fields = NULL;
 				cout << "  store template OK" << endl;
@@ -272,34 +316,42 @@ int main()
 		}
 
 		ostringstream output;
-		SymbolString writeMstr(mstr.getDataStr().substr(0, 10), false);
-		SymbolString writeSstr(sstr.getDataStr().substr(0, 2), false);
-		result = fields->read(pt_masterData, mstr, 0, output, false, verbose);
-		if (result >= RESULT_OK) {
-			result = fields->read(pt_slaveData, sstr, 0, output, output.str().empty() == false, verbose);
+		SymbolString writeMstr(false);
+		result = writeMstr.parseHex(mstr.getDataStr(true, false).substr(0, 10));
+		if (result != RESULT_OK) {
+			cout << "  parse \"" << mstr.getDataStr(true, false).substr(0, 10) << "\" error: " << getResultCode(result) << endl;
 		}
-		if (failedRead == true)
+		SymbolString writeSstr(false);
+		result = writeSstr.parseHex(sstr.getDataStr(true, false).substr(0, 2));
+		if (result != RESULT_OK) {
+			cout << "  parse \"" << sstr.getDataStr(true, false).substr(0, 2) << "\" error: " << getResultCode(result) << endl;
+		}
+		result = fields->read(pt_masterData, mstr, 0, output, (verbose?OF_VERBOSE:0)|(numeric?OF_NUMERIC:0)|(json?OF_JSON:0), false);
+		if (result >= RESULT_OK) {
+			result = fields->read(pt_slaveData, sstr, 0, output, (verbose?OF_VERBOSE:0)|(numeric?OF_NUMERIC:0)|(json?OF_JSON:0), !output.str().empty());
+		}
+		if (failedRead)
 			if (result >= RESULT_OK)
-				cout << "  failed read " << fields->getName() << " >"
-				        << check[2] << "< error: unexpectedly succeeded" << endl;
+				cout << "  failed read " << fields->getName() << " >" << check[2] << " " << check[3]
+				     << "< error: unexpectedly succeeded" << endl;
 			else
-				cout << "  failed read " << fields->getName() << " >"
-				        << check[2] << "< OK" << endl;
+				cout << "  failed read " << fields->getName() << " >" << check[2] << " " << check[3]
+				     << "< OK" << endl;
 		else if (result < RESULT_OK) {
-			cout << "  read " << fields->getName() << " >" << check[2]
-			        << "< error: " << getResultCode(result) << endl;
+			cout << "  read " << fields->getName() << " >" << check[2] << " " << check[3]
+			     << "< error: " << getResultCode(result) << endl;
 		}
 		else {
 			bool match = strcasecmp(output.str().c_str(), expectStr.c_str()) == 0;
 			verify(failedReadMatch, "read", check[2], match, expectStr, output.str());
 		}
 
-		if (verbose == false) {
+		if (!verbose && !json) {
 			istringstream input(expectStr);
 			result = fields->write(input, pt_masterData, writeMstr, 0);
 			if (result >= RESULT_OK)
 				result = fields->write(input, pt_slaveData, writeSstr, 0);
-			if (failedWrite == true) {
+			if (failedWrite) {
 				if (result >= RESULT_OK)
 					cout << "  failed write " << fields->getName() << " >"
 					        << expectStr << "< error: unexpectedly succeeded" << endl;

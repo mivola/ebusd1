@@ -1,10 +1,7 @@
-AC_PREREQ([2.65])
-AC_INIT([ebusd], [0.5.0], [ebusd@liwest.at], [ebusd], [https://github.com/yuhu-/ebusd])
+AC_PREREQ([2.63])
+AC_INIT([ebusd], m4_esyscmd_s([cat VERSION]), [ebusd@ebusd.eu], [ebusd], [https://github.com/john30/ebusd])
 
-case "$@" in
-	*"--sysconfdir="*) ;;
-	*) sysconfdir=/etc ;;
-esac
+AC_CONFIG_AUX_DIR([build])
 
 if test -z $CXXFLAGS;
 	then CXXFLAGS='-g -O2'
@@ -24,13 +21,18 @@ AC_CHECK_HEADERS([arpa/inet.h \
 		  termios.h])
 
 AC_CHECK_LIB([pthread], [pthread_setname_np],
-	AC_DEFINE([HAVE_PTHREAD_SETNAME_NP], [1], ["Define to 1 if pthread has pthread_setname_np."]),
+	AC_DEFINE([HAVE_PTHREAD_SETNAME_NP], [1], [Define to 1 if pthread has pthread_setname_np.]),
 	AC_MSG_RESULT([Could not find pthread_setname_np in pthread.]))
 
-AC_CHECK_FUNC([pselect], [AC_DEFINE(HAVE_PSELECT, [1], ["Define to 1 if pselect() is available."])])
-AC_CHECK_FUNC([ppoll], [AC_DEFINE(HAVE_PPOLL, [1], ["Define to 1 if ppoll() is available."])])
+AC_CHECK_FUNC([pselect], [AC_DEFINE(HAVE_PSELECT, [1], [Define to 1 if pselect() is available.])])
+AC_CHECK_FUNC([ppoll], [AC_DEFINE(HAVE_PPOLL, [1], [Define to 1 if ppoll() is available.])])
+AC_CHECK_FUNC([argp_parse], [have_argp=yes], AC_CHECK_LIB([argp], [argp_parse], [have_argp=yes; LIBS="-largp $LIBS"], [have_argp=no]))
+if test "x$have_argp" = "xyes"; then
+  AC_CHECK_HEADER([argp.h], AC_DEFINE([HAVE_ARGP_H], [1], [Define to 1 if argp.h is available.]), AC_MSG_ERROR([argp.h not found]))
+else
+  AC_MSG_ERROR([argp library not found. argp-standalone required.])
+fi
 
-AC_CONFIG_AUX_DIR([build])
 AC_CONFIG_SRCDIR([src/ebusd/main.cpp])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([Makefile
@@ -41,9 +43,11 @@ AC_CONFIG_FILES([Makefile
 		 src/ebusd/Makefile
 		 src/tools/Makefile])
 
-AC_DEFINE_UNQUOTED(PACKAGE_PIDFILE, LOCALSTATEDIR "/run/" PACKAGE ".pid", [The name of the PID file.])
+AC_DEFINE_UNQUOTED(PACKAGE_PIDFILE, LOCALSTATEDIR "/run/" PACKAGE ".pid", [The path and name of the PID file.])
+AC_DEFINE_UNQUOTED(PACKAGE_LOGFILE, LOCALSTATEDIR "/log/" PACKAGE ".log", [The path and name of the log file.])
+AC_DEFINE_UNQUOTED(PACKAGE_CONFIGPATH, SYSCONFDIR "/" PACKAGE, [The default path of the configuration files.])
 
-AC_CHECK_PROGS([HAVE_DOXYGEN], [doxygen])
+AC_CHECK_PROGS([HAVE_DOXYGEN], [doxygen], [])
 if test -z "$HAVE_DOXYGEN";
 	then AC_MSG_WARN([Doxygen not found - continuing without Doxygen support.])
 fi

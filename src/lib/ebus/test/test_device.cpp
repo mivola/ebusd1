@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2015 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -34,7 +34,7 @@ int main ()
 	if (result != RESULT_OK) {
 		cout << "open failed: " << getResultCode(result) << endl;
 	} else {
-		if (device->isValid() == false)
+		if (!device->isValid())
 			cout << "device not available." << endl;
 
 		int count = 0;
@@ -52,7 +52,7 @@ int main ()
 
 		device->close();
 
-		if(device->isValid() == false)
+		if (!device->isValid())
 			cout << "close successful." << endl;
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) John Baier 2014 <ebusd@johnm.de>
+ * Copyright (C) John Baier 2014-2015 <ebusd@ebusd.eu>
  *
  * This file is part of ebusd.
  *
@@ -72,7 +72,7 @@ public:
 	{
 		ifstream ifs;
 		ifs.open(filename.c_str(), ifstream::in);
-		if (ifs.is_open() == false)
+		if (!ifs.is_open())
 			return RESULT_ERR_NOTFOUND;
 
 		string line;
@@ -96,7 +96,7 @@ public:
 				switch (ch)
 				{
 				case FIELD_SEPARATOR:
-					if (quotedText == true)
+					if (quotedText)
 						field << ch;
 					else {
 						row.push_back(field.str());
@@ -104,7 +104,7 @@ public:
 					}
 					break;
 				case TEXT_SEPARATOR:
-					if (quotedText == true) {
+					if (quotedText) {
 						quotedText = false;
 					}
 					else if (prev == TEXT_SEPARATOR) { // double dquote
@@ -130,7 +130,7 @@ public:
 			result_t result;
 			vector<string>::iterator it = row.begin();
 			const vector<string>::iterator end = row.end();
-			if (m_supportsDefaults == true) {
+			if (m_supportsDefaults) {
 				if (line[0] == '*') {
 					row[0] = row[0].substr(1);
 					defaults.push_back(row);
@@ -142,17 +142,27 @@ public:
 				result = addFromFile(it, end, arg, NULL, filename, lineNo);
 
 			if (result != RESULT_OK) {
-				if (verbose == false) {
+				if (!verbose) {
 					ifs.close();
+					ostringstream error;
+					error << filename <<":" << static_cast<unsigned>(lineNo);
+					m_lastError = error.str();
 					return result;
 				}
 				printErrorPos(row.begin(), end, it, filename, lineNo, result);
-			}
+			} else if (!verbose)
+				m_lastError = "";
 		}
 
 		ifs.close();
 		return RESULT_OK;
 	}
+
+	/**
+	 * Return a @a string describing the last error position.
+	 * @return a @a string describing the last error position.
+	 */
+	virtual string getLastError() { return m_lastError; }
 
 	/**
 	 * Add a definition that was read from a file.
@@ -170,6 +180,9 @@ private:
 
 	/** whether this instance supports rows with defaults (starting with a star). */
 	bool m_supportsDefaults;
+
+	/** a @a string describing the last error position. */
+	string m_lastError;
 
 };
 
