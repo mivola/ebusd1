@@ -5,6 +5,15 @@ ebusd is a daemon for handling communication with eBUS devices connected to a
 2-wire bus system ("energy bus" used by numerous heating systems).
 
 
+Repository moved!!!
+-------------------
+Recently I started with a new git repository for working on version 2.0!  
+The old repository (this one) was renamed to "ebusd1" where the new repository is now named "ebusd". This way your git clones should automatically continue receiving updates from the new repository.  
+
+Please check for new releases, issues and the wiki here:  
+https://github.com/john30/ebusd
+
+
 Features
 --------
 
